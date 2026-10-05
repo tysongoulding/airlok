@@ -4576,6 +4576,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 	var outputMessages []schemas.ResponsesMessage
 	var reasoningContentBlocks []schemas.ResponsesMessageContentBlock
 	var reasoningRedactedContent *string
+	var reasoningItemID *string // upstream id recovered from a wrapped redactedContent blob
 
 	// Check if we have a structured output tool
 	var structuredOutputToolName string
@@ -4767,8 +4768,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				// Opaque blob: carried on the reasoning message rather than as a
 				// content block, since there is no prose for one to hold. A blob
 				// Bifrost wrapped for a Converse client unwraps to the upstream's
-				// own token; native Bedrock blobs pass through.
-				reasoningRedactedContent = new(decodeRedactedContentFromConverse(*block.ReasoningContent.RedactedContent))
+				// own token and the item id it was bound to; native Bedrock blobs
+				// pass through.
+				id, token := decodeRedactedContentFromConverse(*block.ReasoningContent.RedactedContent)
+				reasoningRedactedContent = &token
+				reasoningItemID = id
 			}
 		} else if block.ToolUse != nil {
 			// Tool use content
@@ -5127,8 +5131,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 
 	// Handle reasoning blocks - prepend reasoning message if we collected any
 	if len(reasoningContentBlocks) > 0 || reasoningRedactedContent != nil {
+		// The upstream binds encrypted content to the id it issued, so a recovered
+		// id must win over a fresh one (#7729).
+		if reasoningItemID == nil {
+			reasoningItemID = new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano()))
+		}
 		reasoningMessage := schemas.ResponsesMessage{
-			ID:   new("rs_" + fmt.Sprintf("%d", time.Now().UnixNano())),
+			ID:   reasoningItemID,
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
 			ResponsesReasoning: &schemas.ResponsesReasoning{
 				Summary:          []schemas.ResponsesReasoningSummary{},
@@ -5180,16 +5189,19 @@ func isConverseResponseRendering(ctx context.Context) bool {
 // exposed text becomes reasoningText (signed when a signature exists), while an
 // encrypted-only block stays redactedContent.
 func convertBifrostReasoningToConverseResponseReasoning(msg *schemas.ResponsesMessage) []BedrockContentBlock {
-	return encodeConverseRedactedBlocks(renderConverseResponseReasoning(msg))
+	if msg == nil {
+		return nil
+	}
+	return encodeConverseRedactedBlocks(msg.ID, renderConverseResponseReasoning(msg))
 }
 
-// encodeConverseRedactedBlocks makes every redactedContent a valid Converse blob.
-// Only the client-facing render does this: replays to Bedrock carry Bedrock's own
-// blob, which is already one.
-func encodeConverseRedactedBlocks(blocks []BedrockContentBlock) []BedrockContentBlock {
+// encodeConverseRedactedBlocks makes every redactedContent a valid Converse blob,
+// carrying the reasoning item id inside the ones it wraps. Only the client-facing
+// render does this: replays to Bedrock carry Bedrock's own blob, which is already one.
+func encodeConverseRedactedBlocks(id *string, blocks []BedrockContentBlock) []BedrockContentBlock {
 	for i := range blocks {
 		if rc := blocks[i].ReasoningContent; rc != nil && rc.RedactedContent != nil {
-			rc.RedactedContent = new(encodeRedactedContentForConverse(*rc.RedactedContent))
+			rc.RedactedContent = new(encodeRedactedContentForConverse(id, *rc.RedactedContent))
 		}
 	}
 	return blocks
