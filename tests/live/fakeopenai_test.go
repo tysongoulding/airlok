@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -50,7 +51,10 @@ type fakeSession struct {
 	conns   []fakeConn
 	frames  []gjson.Result
 	seconds float64
-	closed  bool
+
+	recordingBytes int           // a recording of this size replaces the one-second default
+	recordingPace  time.Duration // pause between 1 MiB chunks of a large recording
+	closed         bool
 }
 
 // fakeConn is one connection of a session: a WebSocket, or a WebRTC data channel.
@@ -332,7 +336,42 @@ func (f *fakeOpenAI) serveContent(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	_, _ = w.Write(fakeRecording())
+	s.mu.Lock()
+	size, pace := s.recordingBytes, s.recordingPace
+	s.mu.Unlock()
+	if size == 0 {
+		_, _ = w.Write(fakeRecording())
+		return
+	}
+	// A long call's recording: the header, then silence in paced chunks so a gateway that waits
+	// for the whole body is told apart from one that relays it as it arrives.
+	w.Header().Set("Content-Length", strconv.Itoa(size))
+	flusher, _ := w.(http.Flusher)
+	header := fakeRecording()[:44]
+	binary.LittleEndian.PutUint32(header[4:], uint32(size-8))
+	binary.LittleEndian.PutUint32(header[40:], uint32(size-44))
+	if _, err := w.Write(header); err != nil {
+		return
+	}
+	chunk := make([]byte, 1<<20)
+	for written := len(header); written < size; {
+		n := min(len(chunk), size-written)
+		if _, err := w.Write(chunk[:n]); err != nil {
+			return
+		}
+		written += n
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(pace)
+	}
+}
+
+// SetRecording makes the session's recording size bytes long, written in paced 1 MiB chunks.
+func (s *fakeSession) SetRecording(size int, pace time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordingBytes, s.recordingPace = size, pace
 }
 
 // fakeRecording is one second of 24 kHz mono silence as a WAV file.

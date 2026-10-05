@@ -98,6 +98,24 @@ def test_download_recording(client, marker):
     assert not row.get("live_session"), "a download is logged on its own, not in the session's row"
 
 
+def test_download_recording_streams(client, marker):
+    """The SDK's streaming download: chunks arrive through the gateway instead of one body."""
+    with client.live.connect() as connection, microphone(connection):
+        connection.session.start(session=session_config(marker, store=True))
+        provider_session_id = wait_for(connection, "session.started").session.id
+        connection.session.close()
+        wait_for(connection, "session.closed")
+
+    with client.live.sessions.with_streaming_response.download_recording(provider_session_id) as response:
+        assert response.http_response.status_code == 200
+        chunks = list(response.iter_bytes(chunk_size=4096))
+    assert chunks and chunks[0][:4] == b"RIFF", chunks[:1]
+    total = sum(len(chunk) for chunk in chunks)
+    if UPSTREAM == "fake":
+        assert total == 44 + 24000 * 2, "the fake's one second of 24 kHz silence, chunk by chunk"
+    assert len(chunks) > 1, "the recording arrived in more than one chunk"
+
+
 def test_unstored_session_has_no_recording(client, marker):
     with client.live.connect() as connection, microphone(connection):
         connection.session.start(session=session_config(marker))

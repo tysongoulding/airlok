@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	liveBootstrapTimeout  = 15 * time.Second
-	liveBootstrapMaxBytes = 1 << 20
+	liveBootstrapTimeout = 15 * time.Second
+	liveMaxFrameBytes    = 16 << 20
 )
 
 // WSLiveHandler relays GPT Live primary WebSocket sessions and bills them as they run.
@@ -239,6 +239,7 @@ func (h *WSLiveHandler) dial(ctx *schemas.BifrostContext, provider schemas.LiveP
 
 // readLiveSessionStart reads the bootstrap frame, which must be session.start.
 func readLiveSessionStart(clientConn *realtimeClientConn) ([]byte, *schemas.LiveSession, error) {
+	clientConn.conn.SetReadLimit(liveMaxFrameBytes)
 	if err := clientConn.conn.SetReadDeadline(time.Now().Add(liveBootstrapTimeout)); err != nil {
 		return nil, nil, err
 	}
@@ -249,9 +250,6 @@ func readLiveSessionStart(clientConn *realtimeClientConn) ([]byte, *schemas.Live
 	}
 	if messageType != ws.TextMessage {
 		return nil, nil, errors.New("live sessions only accept text messages")
-	}
-	if len(message) > liveBootstrapMaxBytes {
-		return nil, nil, errors.New("session.start exceeded 1 MiB")
 	}
 	if schemas.LiveEventTypeOf(message) != schemas.LiveEventSessionStart {
 		return nil, nil, errors.New("the first event of a live session must be session.start")

@@ -287,10 +287,10 @@ func TestLiveContentDownloadLogsItsOwnRow(t *testing.T) {
 	_, _, err = plugin.PreLLMHook(ctx, req)
 	require.NoError(t, err)
 	resp := &schemas.BifrostResponse{LiveContentResponse: &schemas.LiveContentResponse{
-		SessionID:   "live_abc",
-		Content:     []byte("RIFF....WAVEfmt "),
-		ContentType: "audio/wav",
-		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveContentRequest, Provider: schemas.OpenAI},
+		SessionID:     "live_abc",
+		ContentType:   "audio/wav",
+		ContentLength: 16,
+		ExtraFields:   schemas.BifrostResponseExtraFields{RequestType: schemas.LiveContentRequest, Provider: schemas.OpenAI},
 	}}
 	_, _, err = plugin.PostLLMHook(ctx, resp, nil)
 	require.NoError(t, err)
