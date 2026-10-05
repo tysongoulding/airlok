@@ -322,6 +322,20 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 	return response, nil
 }
 
+// unwrapResultEnvelope returns the systemone body inside a Cloudflare Workers AI
+// REST envelope ({"result": {...}, "success": true, ...}), which serves
+// Jev-compatible models such as Clef. A body that already carries "answers" is
+// returned as is, so plain systemone endpoints are never affected.
+func unwrapResultEnvelope(body []byte) []byte {
+	if gjson.GetBytes(body, "answers").Exists() {
+		return body
+	}
+	if result := gjson.GetBytes(body, "result"); result.IsObject() {
+		return []byte(result.Raw)
+	}
+	return body
+}
+
 // ToBifrostDecisionRequest converts a native systemone request into the
 // shared decision shape. Question identifiers become answer field names; the
 // native type vocabulary is identical to the Bifrost kind vocabulary. An

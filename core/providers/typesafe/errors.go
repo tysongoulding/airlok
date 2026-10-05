@@ -28,6 +28,18 @@ func parseTypesafeError(resp *fasthttp.Response) *schemas.BifrostError {
 	if message == "" {
 		message = detailMessage
 	}
+	// A Cloudflare Workers AI envelope carries its reasons in errors[]. Its body is
+	// not a Typesafe error, so the native route rebuilds one instead of relaying it.
+	envelope := message == "" && len(errorResp.Errors) > 0
+	if envelope {
+		messages := make([]string, 0, len(errorResp.Errors))
+		for _, entry := range errorResp.Errors {
+			if entry.Message != "" {
+				messages = append(messages, entry.Message)
+			}
+		}
+		message = strings.Join(messages, "; ")
+	}
 
 	if bifrostErr.Error == nil {
 		bifrostErr.Error = &schemas.ErrorField{}
@@ -41,6 +53,9 @@ func parseTypesafeError(resp *fasthttp.Response) *schemas.BifrostError {
 		bifrostErr.Error.Type = &errorType
 	}
 
+	if envelope {
+		return bifrostErr
+	}
 	if body, err := providerUtils.CheckAndDecodeBody(resp); err == nil && gjson.ValidBytes(body) {
 		var buf bytes.Buffer
 		if err := json.Compact(&buf, body); err == nil {

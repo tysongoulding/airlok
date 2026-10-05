@@ -285,6 +285,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 		rawErrBody := append([]byte(nil), resp.Body()...)
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+	respBody = unwrapResultEnvelope(respBody)
 
 	var typesafeResp TypesafeDecisionResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &typesafeResp, jsonData, sendBackRawRequest, sendBackRawResponse)
