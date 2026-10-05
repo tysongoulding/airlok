@@ -419,11 +419,6 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 	if bifrost.MCPManager == nil {
 		return nil
 	}
-	// A raw-body request goes to the provider byte for byte, so a rewrite of the parsed
-	// request would never reach the wire. Send it as the caller wrote it.
-	if useRaw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRaw {
-		return nil
-	}
 	return resolveInjectedTools(bifrost.MCPManager, config, requestType, bifrost.logger)
 }
 
@@ -481,4 +476,23 @@ func (bifrost *Bifrost) executeInjectedCall(ctx *schemas.BifrostContext, call sc
 		Content:         &schemas.ChatMessageContent{ContentStr: &message},
 		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: call.ID, IsError: new(true)},
 	}
+}
+
+// clearAnthropicPassthroughForInjectedTools moves an attempt with injected tools off
+// Anthropic raw-body passthrough, the path Claude Code takes to Anthropic models.
+//
+// Passthrough forwards the caller's bytes, so the request rewrite (native web search
+// out, MCP tool in) and the appended turns would never reach the wire, and the raw
+// upstream events streamed back would show the client the injected tool_use blocks.
+// The typed path is the one every non-Anthropic provider already serves Claude Code
+// through. It runs before applyRawCaptureSignals for the same reason as
+// clearAnthropicPassthroughForNonNativeProvider.
+func clearAnthropicPassthroughForInjectedTools(ctx *schemas.BifrostContext, set *injectedToolSet) {
+	if set == nil {
+		return
+	}
+	if useRaw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !useRaw {
+		return
+	}
+	disableAnthropicPassthrough(ctx)
 }

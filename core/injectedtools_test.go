@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -362,4 +363,28 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	assert.Equal(t, "Sunny.", *resp.Output[1].Content.ContentStr)
 	assert.Equal(t, 30, resp.Usage.InputTokens)
 	assert.Equal(t, 33, resp.Usage.TotalTokens)
+}
+
+// Claude Code reaches Anthropic through raw-body passthrough, which forwards the
+// caller's bytes and would carry the native web search tool past the rewrite. An
+// attempt with injected tools takes the typed path instead, the same switch a
+// non-Anthropic provider gets.
+func TestClearAnthropicPassthroughForInjectedTools(t *testing.T) {
+	passthrough := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+		ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/messages")
+		return ctx
+	}
+
+	ctx := passthrough()
+	clearAnthropicPassthroughForInjectedTools(ctx, testInjectedSet(t))
+	assert.Equal(t, false, ctx.Value(schemas.BifrostContextKeyUseRawRequestBody))
+	assert.Equal(t, false, ctx.Value(schemas.BifrostContextKeySendBackRawResponse), "raw upstream events would leak the injected tool_use blocks")
+	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyURLPath))
+
+	untouched := passthrough()
+	clearAnthropicPassthroughForInjectedTools(untouched, nil)
+	assert.Equal(t, true, untouched.Value(schemas.BifrostContextKeyUseRawRequestBody), "a provider without injected tools keeps passthrough")
 }

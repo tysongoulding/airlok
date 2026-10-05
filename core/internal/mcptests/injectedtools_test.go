@@ -79,10 +79,13 @@ func chatCompletionJSON(content string, finish string, toolCall string) string {
 
 // injectedToolsAccount serves one OpenAI provider pointed at a fake server, with the
 // in-process web_search tool configured as the provider's injected web search.
-type injectedToolsAccount struct{ baseURL string }
+type injectedToolsAccount struct {
+	provider schemas.ModelProvider
+	baseURL  string
+}
 
 func (a *injectedToolsAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
-	return []schemas.ModelProvider{schemas.OpenAI}, nil
+	return []schemas.ModelProvider{a.provider}, nil
 }
 
 func (a *injectedToolsAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
@@ -103,12 +106,16 @@ func (a *injectedToolsAccount) GetConfigForProvider(provider schemas.ModelProvid
 }
 
 func setupInjectedToolsBifrost(t *testing.T, fake *fakeOpenAI, searches *[]string) *bifrost.Bifrost {
+	return setupInjectedToolsBifrostFor(t, schemas.OpenAI, fake, searches)
+}
+
+func setupInjectedToolsBifrostFor(t *testing.T, provider schemas.ModelProvider, fake *fakeOpenAI, searches *[]string) *bifrost.Bifrost {
 	t.Helper()
 	server := httptest.NewServer(fake)
 	t.Cleanup(server.Close)
 
 	b, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-		Account: &injectedToolsAccount{baseURL: server.URL},
+		Account: &injectedToolsAccount{provider: provider, baseURL: server.URL},
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
 		MCPConfig: &schemas.MCPConfig{
 			// Regular MCP auto-injection stays off: the provider config alone must put
@@ -374,4 +381,48 @@ func TestInjectedWebSearch_ResponsesStreamEndToEnd(t *testing.T) {
 	}
 	assert.Contains(t, replayed, "function_call")
 	assert.Contains(t, replayed, "function_call_output")
+}
+
+// TestInjectedWebSearch_AnthropicPassthrough covers the path Claude Code takes to
+// Anthropic models: the integration forwards the caller's raw body. With injected
+// tools the attempt must leave passthrough, or the native web_search_20250305 tool
+// would reach Anthropic and the MCP tool would not.
+func TestInjectedWebSearch_AnthropicPassthrough(t *testing.T) {
+	fake := &fakeOpenAI{replies: []string{
+		`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"toolu_1","name":"` + injectedSearchTool + `","input":{"query":"weather in paris"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":2}}`,
+		`{"id":"msg_2","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"It is sunny."}],"stop_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":3}}`,
+	}}
+	var searches []string
+	b := setupInjectedToolsBifrostFor(t, schemas.Anthropic, fake, &searches)
+
+	raw := []byte(`{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"Weather in Paris?"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3}]}`)
+	ctx := createTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+	resp, bifrostErr := b.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-5",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(1024),
+			Tools:           []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeWebSearch, Name: schemas.Ptr("web_search")}},
+		},
+		RawRequestBody: raw,
+	})
+
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+	assert.Equal(t, []string{"weather in paris"}, searches)
+	require.Len(t, fake.bodies, 2)
+	assert.Equal(t, []string{injectedSearchTool}, fake.toolNames(0), "the raw body's native web search never reaches Anthropic")
+	messages, _ := fake.bodies[1]["messages"].([]any)
+	require.Len(t, messages, 3, "user, assistant tool_use, user tool_result")
+	require.NotEmpty(t, resp.Output)
+	for _, item := range resp.Output {
+		assert.NotEqual(t, schemas.ResponsesMessageTypeFunctionCall, *item.Type, "the client never sees the injected call")
+	}
 }
