@@ -3845,3 +3845,29 @@ func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateConfigSchema_InjectedTools pins injected_tools on every provider shape.
+// The provider_with_*_config variants set additionalProperties:false, so a field listed
+// only on the generic provider def is rejected for Bedrock, Azure, Vertex and the rest.
+func TestValidateConfigSchema_InjectedTools(t *testing.T) {
+	schema := loadLocalSchema(t)
+	const injected = `"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`
+	for _, provider := range []string{"openai", "anthropic", "bedrock", "bedrock_mantle", "azure", "vertex", "ollama", "sgl", "vllm", "replicate", "databricks", "deepseek", "fireworks", "github_copilot"} {
+		config := fmt.Sprintf(`{"providers": {%q: {"keys": [{"name": "k", "value": "v", "weight": 1.0}], %s}}}`, provider, injected)
+		err := ValidateConfigSchema([]byte(config), schema)
+		if err != nil && strings.Contains(err.Error(), "injected_tools") {
+			t.Errorf("%s: injected_tools must be accepted, got: %v", provider, err)
+		}
+	}
+
+	for name, block := range map[string]string{
+		"missing tool_name": `{"web_search": {"mcp_client_name": "tavily"}}`,
+		"empty client name": `{"web_search": {"mcp_client_name": "", "tool_name": "search"}}`,
+		"unknown slot":      `{"code_exec": {"mcp_client_name": "tavily", "tool_name": "run"}}`,
+	} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err == nil {
+			t.Errorf("%s: expected injected_tools to fail validation", name)
+		}
+	}
+}

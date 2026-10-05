@@ -22053,3 +22053,28 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
 }
+
+// TestValidateInjectedTools pins what the management API accepts for injected_tools.
+// A reference to an MCP client that does not exist is rejected up front: at request
+// time it would fail open and the provider would silently serve requests without the
+// web search tool the operator configured.
+func TestValidateInjectedTools(t *testing.T) {
+	clients := map[string]string{"id-1": "tavily"}
+	ref := func(client, tool string) *schemas.InjectedToolsConfig {
+		return &schemas.InjectedToolsConfig{WebSearch: &schemas.InjectedToolRef{MCPClientName: client, ToolName: tool}}
+	}
+
+	assert.NoError(t, ValidateInjectedTools(nil, nil), "no injected_tools block is not a misconfiguration")
+	assert.NoError(t, ValidateInjectedTools(&schemas.InjectedToolsConfig{}, nil), "an empty block injects nothing")
+	assert.NoError(t, ValidateInjectedTools(ref("tavily", "search"), clients))
+
+	for name, cfg := range map[string]*schemas.InjectedToolsConfig{
+		"missing client name": ref("", "search"),
+		"blank client name":   ref("  ", "search"),
+		"missing tool name":   ref("tavily", ""),
+		"unknown client":      ref("exa", "search"),
+	} {
+		assert.Error(t, ValidateInjectedTools(cfg, clients), name)
+	}
+	assert.Error(t, ValidateInjectedTools(ref("tavily", "search"), nil), "no MCP clients configured at all")
+}

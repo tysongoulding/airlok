@@ -8190,6 +8190,32 @@ func ValidatePromptCache(cfg *schemas.PromptCacheConfig) error {
 	return nil
 }
 
+// ValidateInjectedTools validates the injected_tools block arriving over the management
+// API. mcpClientNames is the configured MCP clients keyed by ID (GetMCPClientNames).
+//
+// The referenced client must exist now. At request time a missing client fails open,
+// so a typo here would otherwise leave the provider serving requests without the tool
+// the operator configured and with no error anywhere. The tool itself is not checked:
+// a client's tool list is only known once it connects, and that is a runtime concern.
+func ValidateInjectedTools(cfg *schemas.InjectedToolsConfig, mcpClientNames map[string]string) error {
+	if cfg == nil || cfg.WebSearch == nil {
+		return nil
+	}
+	ref := cfg.WebSearch
+	if strings.TrimSpace(ref.MCPClientName) == "" {
+		return fmt.Errorf("injected tools validation failed: web_search.mcp_client_name is required")
+	}
+	if strings.TrimSpace(ref.ToolName) == "" {
+		return fmt.Errorf("injected tools validation failed: web_search.tool_name is required")
+	}
+	for _, name := range mcpClientNames {
+		if name == ref.MCPClientName {
+			return nil
+		}
+	}
+	return fmt.Errorf("injected tools validation failed: web_search references unknown MCP client %q", ref.MCPClientName)
+}
+
 // ValidateCustomProviderUpdate validates that immutable fields in CustomProviderConfig are not changed during updates
 func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.ProviderConfig, provider schemas.ModelProvider) error {
 	// If neither config has CustomProviderConfig, no validation needed
