@@ -9009,8 +9009,8 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 }
 
 // applyAnthropicToolFlagsToResponsesTool propagates the Anthropic-native tool
-// flags (DeferLoading, AllowedCallers, InputExamples, EagerInputStreaming) in
-// the inbound direction: from the incoming AnthropicTool onto the neutral
+// flags (DeferLoading, AllowedCallers, InputExamples, EagerInputStreaming,
+// CacheControl) in the inbound direction: from the incoming AnthropicTool onto the neutral
 // ResponsesTool when the native Anthropic /v1/messages endpoint is the entry
 // point. Called once per converted tool so every return path inside
 // convertAnthropicToolToBifrost benefits.
@@ -9036,10 +9036,13 @@ func applyAnthropicToolFlagsToResponsesTool(at *AnthropicTool, rt *schemas.Respo
 	if at.EagerInputStreaming != nil {
 		rt.EagerInputStreaming = at.EagerInputStreaming
 	}
+	if at.CacheControl != nil {
+		rt.CacheControl = at.CacheControl
+	}
 }
 
 // applyResponsesToolAnthropicFlags propagates the Anthropic-native tool flags
-// (DeferLoading, AllowedCallers, InputExamples, EagerInputStreaming) from the
+// (DeferLoading, AllowedCallers, InputExamples, EagerInputStreaming, CacheControl) from the
 // neutral ResponsesTool onto the provider-native AnthropicTool. Called once
 // per converted tool so every branch in convertBifrostToolToAnthropic
 // benefits without duplicating the logic on each return path.
@@ -9064,6 +9067,9 @@ func applyResponsesToolAnthropicFlags(at *AnthropicTool, rt *schemas.ResponsesTo
 	}
 	if rt.EagerInputStreaming != nil {
 		at.EagerInputStreaming = rt.EagerInputStreaming
+	}
+	if rt.CacheControl != nil {
+		at.CacheControl = rt.CacheControl
 	}
 }
 
