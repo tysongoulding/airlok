@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -33,7 +34,11 @@ func (f *fakeOpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reply := f.replies[0]
 	f.replies = f.replies[1:]
 	f.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
+	if strings.HasPrefix(reply, "data:") {
+		w.Header().Set("Content-Type", "text/event-stream")
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+	}
 	_, _ = w.Write([]byte(reply))
 }
 
@@ -198,4 +203,78 @@ func TestInjectedWebSearch_ClientToolCallsPassThrough(t *testing.T) {
 	assert.Equal(t, []string{"get_weather", injectedSearchTool}, fake.toolNames(0))
 	require.Len(t, resp.Choices[0].Message.ToolCalls, 1, "a client tool call goes back to the client")
 	assert.Equal(t, "get_weather", *resp.Choices[0].Message.ToolCalls[0].Function.Name)
+}
+
+// sseChat renders chat completion chunks as an OpenAI SSE body.
+func sseChat(id string, chunks ...string) string {
+	var b strings.Builder
+	for _, chunk := range chunks {
+		b.WriteString(`data: {"id":"` + id + `","object":"chat.completion.chunk","created":1,"model":"gpt-4o",` + chunk + "}\n\n")
+	}
+	b.WriteString("data: [DONE]\n\n")
+	return b.String()
+}
+
+// TestInjectedWebSearch_ChatStreamEndToEnd streams a chat request across two upstream
+// turns. The client must get one stream: the first turn's text live, no injected tool
+// call deltas, the answer, and a single final chunk carrying both turns' usage.
+func TestInjectedWebSearch_ChatStreamEndToEnd(t *testing.T) {
+	fake := &fakeOpenAI{replies: []string{
+		sseChat("turn-1",
+			`"choices":[{"index":0,"delta":{"role":"assistant","content":"Let me search. "},"finish_reason":null}]`,
+			`"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"`+injectedSearchTool+`","arguments":""}}]},"finish_reason":null}]`,
+			`"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":\"weather in paris\"}"}}]},"finish_reason":null}]`,
+			`"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]`,
+			`"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}`,
+		),
+		sseChat("turn-2",
+			`"choices":[{"index":0,"delta":{"role":"assistant","content":"It is sunny."},"finish_reason":null}]`,
+			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]`,
+			`"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}`,
+		),
+	}}
+	var searches []string
+	b := setupInjectedToolsBifrost(t, fake, &searches)
+
+	stream, bifrostErr := b.ChatCompletionStreamRequest(createTestContext(), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
+		Params:   &schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{}},
+	})
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
+
+	var text strings.Builder
+	var finishes []string
+	var usages []*schemas.BifrostLLMUsage
+	ids := map[string]bool{}
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError, "%v", chunk.BifrostError)
+		require.NotNil(t, chunk.BifrostChatResponse)
+		ids[chunk.BifrostChatResponse.ID] = true
+		if chunk.BifrostChatResponse.Usage != nil {
+			usages = append(usages, chunk.BifrostChatResponse.Usage)
+		}
+		for _, choice := range chunk.BifrostChatResponse.Choices {
+			if choice.Delta != nil {
+				assert.Empty(t, choice.Delta.ToolCalls, "no tool call delta reaches the client")
+				if choice.Delta.Content != nil {
+					text.WriteString(*choice.Delta.Content)
+				}
+			}
+			if choice.FinishReason != nil {
+				finishes = append(finishes, *choice.FinishReason)
+			}
+		}
+	}
+
+	assert.Equal(t, []string{"weather in paris"}, searches)
+	assert.Equal(t, "Let me search. It is sunny.", text.String())
+	assert.Equal(t, []string{"stop"}, finishes, "one finish reason, from the last turn")
+	require.Len(t, usages, 1, "one usage, on the final chunk")
+	assert.Equal(t, 30, usages[0].PromptTokens)
+	assert.Equal(t, map[string]bool{"turn-1": true}, ids, "the client sees one stream id")
+	require.Len(t, fake.bodies, 2)
+	assert.Equal(t, []string{injectedSearchTool}, fake.toolNames(0))
+	assert.Nil(t, fake.bodies[0]["web_search_options"], "native web search is not enabled upstream")
 }
