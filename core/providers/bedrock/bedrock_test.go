@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -7484,6 +7485,63 @@ func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
 			case "reasoningConfig":
 				assert.True(t, hasNova, "expected Nova reasoningConfig on egress")
 			}
+		})
+	}
+}
+
+// TestConverseAdditionalModelRequestFieldsStoreReachesParams pins that a boolean
+// store in additionalModelRequestFields - the only place the AWS SDK's ConverseInput
+// can carry it - lands on Params.Store, so an OpenAI/Azure Responses target sends the
+// caller's store:false instead of silently applying its store:true default (#7720).
+func TestConverseAdditionalModelRequestFieldsStoreReachesParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name      string
+		storeJSON string // raw JSON for the store key; empty omits it
+		want      *bool
+	}{
+		{"store_false", `false`, schemas.Ptr(false)},
+		{"store_true", `true`, schemas.Ptr(true)},
+		{"store_absent", ``, nil},
+		{"store_non_boolean_ignored", `"false"`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			storeField := ""
+			if tc.storeJSON != "" {
+				storeField = `, "store": ` + tc.storeJSON
+			}
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What is 17*23? Answer briefly."}]}],
+				"additionalModelRequestFields": {
+					"reasoning_config": {"type": "enabled"},
+					"output_config": {"effort": "medium"}` + storeField + `
+				}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = "azure/gpt-5"
+
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			assert.Equal(t, tc.want, mid.Params.Store, "Params.Store")
+
+			// Azure and OpenAI build the Responses body with the shared OpenAI converter.
+			wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, mid))
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(wire, &fields))
+			got, present := fields["store"]
+			if tc.want == nil {
+				assert.False(t, present, "outbound body must not invent store: %s", wire)
+				return
+			}
+			require.True(t, present, "outbound body dropped store: %s", wire)
+			assert.JSONEq(t, tc.storeJSON, string(got), "outbound store: %s", wire)
 		})
 	}
 }
