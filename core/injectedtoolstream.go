@@ -316,9 +316,28 @@ func resetStreamTurnState(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 }
 
-// startInjectedChatStream serves one streaming chat attempt whose provider injects
-// tools. It returns the client channel at once; a goroutine chains upstream turns into
-// it until a turn ends without injected calls.
+// clientEmit is one chunk the session sends to the client.
+type clientEmit struct {
+	result   *schemas.BifrostResponse
+	terminal bool
+}
+
+// injectedStreamTurns adapts one API's stream session to chainInjectedStream.
+type injectedStreamTurns struct {
+	// process returns what the client sees for one upstream chunk; ok is false for a
+	// chunk this API does not carry, which is passed through unchanged.
+	process func(result *schemas.BifrostResponse, final bool) (emits []clientEmit, ok bool)
+	// continues reports whether the turn that just ended has injected calls pending.
+	continues func() bool
+	// advance executes the pending injected calls and prepares the next turn's request.
+	advance func()
+	// dispatch opens the current turn's upstream stream.
+	dispatch func(runner schemas.PostHookRunner, finalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+}
+
+// chainInjectedStream serves one streaming attempt whose provider injects tools. It
+// returns the client channel at once; a goroutine chains upstream turns into it until
+// a turn ends without injected calls.
 //
 // The session runs inside the provider's post-hook runner, which the provider calls in
 // order with its own StreamEndIndicator writes. For every upstream chunk it sends what
@@ -329,13 +348,12 @@ func resetStreamTurnState(ctx *schemas.BifrostContext) {
 // Providers call the finalizer they are given when their stream ends. Each turn gets
 // one that does nothing until the client stream has ended, because the real finalizer
 // releases the plugin pipeline that later turns still run chunks through.
-func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, original *schemas.BifrostChatRequest, set *injectedToolSet, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	session := newInjectedChatStream(set)
+func chainInjectedStream(ctx *schemas.BifrostContext, turns injectedStreamTurns, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	out := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 	var ended atomic.Bool
 
 	runner := func(c *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-		if bifrostErr != nil || result == nil || result.ChatResponse == nil {
+		if bifrostErr != nil || result == nil {
 			if bifrostErr != nil {
 				ended.Store(true)
 			}
@@ -343,12 +361,17 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 			return nil, injectedStreamSkip
 		}
 		final := IsFinalChunk(c)
-		for _, emit := range session.onChunk(result.ChatResponse, final) {
+		emits, ok := turns.process(result, final)
+		if !ok {
+			sendThroughPostHooks(c, postHookRunner, result, nil, out)
+			return nil, injectedStreamSkip
+		}
+		for _, emit := range emits {
 			c.SetValue(schemas.BifrostContextKeyStreamEndIndicator, emit.terminal)
 			if emit.terminal {
 				ended.Store(true)
 			}
-			sendThroughPostHooks(c, postHookRunner, &schemas.BifrostResponse{ChatResponse: emit.resp}, nil, out)
+			sendThroughPostHooks(c, postHookRunner, emit.result, nil, out)
 		}
 		c.SetValue(schemas.BifrostContextKeyStreamEndIndicator, final)
 		return nil, injectedStreamSkip
@@ -359,8 +382,7 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 		}
 	}
 
-	turn := applyInjectedToolsChat(original, set)
-	upstream, bifrostErr := bifrost.dispatchChatStream(ctx, provider, config, key, turn, runner, turnFinalizer)
+	upstream, bifrostErr := turns.dispatch(runner, turnFinalizer)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -378,11 +400,41 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 					providerUtils.GateSendChunk(ctx, chunk, out)
 				}
 			}
-			if ended.Load() || !session.continues() || ctx.Err() != nil {
+			if ended.Load() || !turns.continues() || ctx.Err() != nil {
 				return
 			}
-			assistant, injected := session.endTurn()
 			resetStreamTurnState(ctx)
+			turns.advance()
+			upstream, bifrostErr = turns.dispatch(runner, turnFinalizer)
+			if bifrostErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				ended.Store(true)
+				sendThroughPostHooks(ctx, postHookRunner, nil, bifrostErr, out)
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// startInjectedChatStream serves a streaming chat attempt whose provider injects tools.
+func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, original *schemas.BifrostChatRequest, set *injectedToolSet, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	session := newInjectedChatStream(set)
+	turn := applyInjectedToolsChat(original, set)
+	return chainInjectedStream(ctx, injectedStreamTurns{
+		process: func(result *schemas.BifrostResponse, final bool) ([]clientEmit, bool) {
+			if result.ChatResponse == nil {
+				return nil, false
+			}
+			var emits []clientEmit
+			for _, emit := range session.onChunk(result.ChatResponse, final) {
+				emits = append(emits, clientEmit{result: &schemas.BifrostResponse{ChatResponse: emit.resp}, terminal: emit.terminal})
+			}
+			return emits, true
+		},
+		continues: session.continues,
+		advance: func() {
+			assistant, injected := session.endTurn()
 			results := executeInjectedCalls(injected, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
 				return bifrost.executeInjectedCall(ctx, call)
 			})
@@ -394,15 +446,271 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 				next.Input = append(next.Input, *result)
 			}
 			turn = &next
+		},
+		dispatch: func(runner schemas.PostHookRunner, finalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return bifrost.dispatchChatStream(ctx, provider, config, key, turn, runner, finalizer)
+		},
+	}, postHookRunner, postHookSpanFinalizer)
+}
 
-			upstream, bifrostErr = bifrost.dispatchChatStream(ctx, provider, config, key, turn, runner, turnFinalizer)
-			if bifrostErr != nil {
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				ended.Store(true)
-				sendThroughPostHooks(ctx, postHookRunner, nil, bifrostErr, out)
-				return
+// startInjectedResponsesStream serves a streaming Responses attempt whose provider
+// injects tools.
+func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, original *schemas.BifrostResponsesRequest, set *injectedToolSet, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	session := newInjectedResponsesStream(set)
+	turn := applyInjectedToolsResponses(original, set)
+	return chainInjectedStream(ctx, injectedStreamTurns{
+		process: func(result *schemas.BifrostResponse, final bool) ([]clientEmit, bool) {
+			if result.ResponsesStreamResponse == nil {
+				return nil, false
+			}
+			var emits []clientEmit
+			for _, emit := range session.onEvent(result.ResponsesStreamResponse, final) {
+				emits = append(emits, clientEmit{result: &schemas.BifrostResponse{ResponsesStreamResponse: emit.event}, terminal: emit.terminal})
+			}
+			return emits, true
+		},
+		continues: session.continues,
+		advance: func() {
+			items, injected := session.endTurn()
+			results := executeInjectedCalls(injected, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+				return bifrost.executeInjectedCall(ctx, call)
+			})
+			next := *turn
+			next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(items)+len(results))
+			next.Input = append(next.Input, turn.Input...)
+			next.Input = append(next.Input, items...)
+			for _, result := range results {
+				next.Input = append(next.Input, result.ToResponsesMessages()...)
+			}
+			turn = &next
+		},
+		dispatch: func(runner schemas.PostHookRunner, finalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return bifrost.dispatchResponsesStream(ctx, provider, config, key, turn, runner, finalizer)
+		},
+	}, postHookRunner, postHookSpanFinalizer)
+}
+
+// responsesEmit is one Responses stream event to send to the client.
+type responsesEmit struct {
+	event    *schemas.BifrostResponsesStreamResponse
+	terminal bool
+}
+
+// itemRoute is what happens to one upstream output item's events.
+type itemRoute int
+
+const (
+	routeVisible  itemRoute = iota // forwarded live with a client output index
+	routeClient                    // a client function call: held until the turn shows no injected call
+	routeInjected                  // an injected function call: never reaches the client
+	routeDropped                   // a client call in a turn that also calls an injected tool
+)
+
+// injectedResponsesStream is the Responses API parallel of injectedChatStream. The
+// client sees one response: the first turn's response.created, items from every turn
+// under consecutive output indexes, sequence numbers without gaps, and one
+// response.completed whose output and usage cover all turns.
+type injectedResponsesStream struct {
+	set   *injectedToolSet
+	depth int
+
+	responseID  *string
+	createdSent bool
+	seq         int
+	nextIndex   int
+	usage       *schemas.BifrostLLMUsage
+	output      []schemas.ResponsesMessage // completed client-visible items, all turns
+
+	// Current turn.
+	routes      map[int]itemRoute
+	indexes     map[int]int // upstream output index -> client output index
+	itemRoutes  map[string]int
+	held        []*schemas.BifrostResponsesStreamResponse
+	heldItems   []schemas.ResponsesMessage
+	replay      []schemas.ResponsesMessage // completed items to send back as next turn's input
+	injected    []schemas.ChatAssistantMessageToolCall
+	hasInjected bool
+	more        bool
+}
+
+func newInjectedResponsesStream(set *injectedToolSet) *injectedResponsesStream {
+	return &injectedResponsesStream{set: set, depth: 1}
+}
+
+// onEvent takes one upstream event and returns the events the client should see.
+func (s *injectedResponsesStream) onEvent(ev *schemas.BifrostResponsesStreamResponse, final bool) []responsesEmit {
+	switch ev.Type {
+	case schemas.ResponsesStreamResponseTypeCreated, schemas.ResponsesStreamResponseTypeInProgress, schemas.ResponsesStreamResponseTypeQueued:
+		if ev.Type == schemas.ResponsesStreamResponseTypeCreated && s.responseID == nil && ev.Response != nil {
+			s.responseID = ev.Response.ID
+		}
+		if s.createdSent && ev.Type != schemas.ResponsesStreamResponseTypeQueued {
+			return nil
+		}
+		if ev.Type == schemas.ResponsesStreamResponseTypeCreated {
+			s.createdSent = true
+		}
+		return []responsesEmit{{event: s.renumber(ev, nil)}}
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
+		return s.onTurnEnd(ev)
+	case schemas.ResponsesStreamResponseTypeFailed, schemas.ResponsesStreamResponseTypeError:
+		return []responsesEmit{{event: s.renumber(ev, nil), terminal: true}}
+	}
+
+	upstreamIndex, route, known := s.routeOf(ev)
+	if !known {
+		return []responsesEmit{{event: s.renumber(ev, nil), terminal: final}}
+	}
+	if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && ev.Item != nil {
+		s.recordDone(route, *ev.Item)
+	}
+	switch route {
+	case routeVisible:
+		index := s.indexes[upstreamIndex]
+		return []responsesEmit{{event: s.renumber(ev, &index)}}
+	case routeClient:
+		s.held = append(s.held, ev)
+	}
+	return nil
+}
+
+// routeOf classifies the item an event belongs to, registering it on output_item.added.
+func (s *injectedResponsesStream) routeOf(ev *schemas.BifrostResponsesStreamResponse) (int, itemRoute, bool) {
+	if s.routes == nil {
+		s.routes, s.indexes, s.itemRoutes = map[int]itemRoute{}, map[int]int{}, map[string]int{}
+	}
+	if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && ev.OutputIndex != nil && ev.Item != nil {
+		index := *ev.OutputIndex
+		route := routeVisible
+		if isFunctionCall(*ev.Item) {
+			switch {
+			case ev.Item.Name != nil && s.set.isInjected(*ev.Item.Name):
+				route = routeInjected
+				s.dropClientCalls()
+			case s.hasInjected:
+				route = routeDropped
+			default:
+				route = routeClient
 			}
 		}
-	}()
-	return out, nil
+		s.routes[index] = route
+		if route == routeVisible {
+			s.indexes[index] = s.nextIndex
+			s.nextIndex++
+		}
+		if ev.Item.ID != nil {
+			s.itemRoutes[*ev.Item.ID] = index
+		}
+		return index, route, true
+	}
+	if ev.OutputIndex != nil {
+		route, ok := s.routes[*ev.OutputIndex]
+		return *ev.OutputIndex, route, ok
+	}
+	if ev.ItemID != nil {
+		if index, ok := s.itemRoutes[*ev.ItemID]; ok {
+			return index, s.routes[index], true
+		}
+	}
+	return 0, 0, false
+}
+
+// dropClientCalls discards the client calls held so far in this turn: the turn calls
+// an injected tool, so it is re-asked and the client calls in it are never answered.
+func (s *injectedResponsesStream) dropClientCalls() {
+	s.hasInjected = true
+	for index, route := range s.routes {
+		if route == routeClient {
+			s.routes[index] = routeDropped
+		}
+	}
+	s.held = nil
+	s.heldItems = nil
+}
+
+func (s *injectedResponsesStream) recordDone(route itemRoute, item schemas.ResponsesMessage) {
+	switch route {
+	case routeVisible:
+		s.output = append(s.output, item)
+		s.replay = append(s.replay, item)
+	case routeInjected:
+		s.replay = append(s.replay, item)
+		if call, ok := injectedResponsesCall(item, s.set); ok {
+			s.injected = append(s.injected, call)
+		}
+	case routeClient:
+		s.heldItems = append(s.heldItems, item)
+	}
+}
+
+// onTurnEnd handles response.completed (or incomplete) for one upstream turn.
+func (s *injectedResponsesStream) onTurnEnd(ev *schemas.BifrostResponsesStreamResponse) []responsesEmit {
+	var turnUsage *schemas.BifrostLLMUsage
+	if ev.Response != nil {
+		turnUsage = ev.Response.Usage.ToBifrostLLMUsage()
+	}
+	s.usage = schemas.MergeBifrostLLMUsage(s.usage, turnUsage)
+	if len(s.injected) > 0 && s.depth < s.set.maxDepth {
+		s.more = true
+		return nil
+	}
+	s.more = false
+
+	var emits []responsesEmit
+	for _, held := range s.held {
+		index := held.OutputIndex
+		if index != nil {
+			upstream := *index
+			if _, ok := s.indexes[upstream]; !ok {
+				s.indexes[upstream] = s.nextIndex
+				s.nextIndex++
+			}
+			index = new(s.indexes[upstream])
+		}
+		emits = append(emits, responsesEmit{event: s.renumber(held, index)})
+	}
+	s.output = append(s.output, s.heldItems...)
+
+	terminal := s.renumber(ev, nil)
+	response := schemas.BifrostResponsesResponse{}
+	if ev.Response != nil {
+		response = *ev.Response
+	}
+	if s.responseID != nil {
+		response.ID = s.responseID
+	}
+	response.Output = s.output
+	response.Usage = s.usage.ToResponsesResponseUsage()
+	terminal.Response = &response
+	return append(emits, responsesEmit{event: terminal, terminal: true})
+}
+
+// renumber copies an event with the client's next sequence number and, when given, the
+// client output index.
+func (s *injectedResponsesStream) renumber(ev *schemas.BifrostResponsesStreamResponse, outputIndex *int) *schemas.BifrostResponsesStreamResponse {
+	out := *ev
+	out.SequenceNumber = s.seq
+	out.ExtraFields.ChunkIndex = s.seq
+	out.ExtraFields.RawResponse = nil
+	s.seq++
+	if outputIndex != nil {
+		out.OutputIndex = outputIndex
+	}
+	return &out
+}
+
+// continues reports whether the turn that just ended left injected calls to execute.
+func (s *injectedResponsesStream) continues() bool {
+	return s.more
+}
+
+// endTurn closes a turn that ended with injected calls pending. It returns the items to
+// replay as input (the turn's output minus client calls) and the calls to execute.
+func (s *injectedResponsesStream) endTurn() ([]schemas.ResponsesMessage, []schemas.ChatAssistantMessageToolCall) {
+	replay, injected := s.replay, s.injected
+	s.depth++
+	s.routes, s.indexes, s.itemRoutes = nil, nil, nil
+	s.held, s.heldItems, s.replay, s.injected = nil, nil, nil, nil
+	s.hasInjected, s.more = false, false
+	return replay, injected
 }

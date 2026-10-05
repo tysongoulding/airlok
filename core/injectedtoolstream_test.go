@@ -169,3 +169,167 @@ func TestInjectedChatStream_StopsAtMaxDepth(t *testing.T) {
 	assert.Empty(t, terminal.resp.Choices[0].Delta.ToolCalls, "an unexecuted injected call never reaches the client")
 	assert.Equal(t, "stop", *terminal.resp.Choices[0].FinishReason)
 }
+
+type responsesEvents struct {
+	seq    int
+	respID string
+}
+
+func (r *responsesEvents) ev(typ schemas.ResponsesStreamResponseType) *schemas.BifrostResponsesStreamResponse {
+	e := &schemas.BifrostResponsesStreamResponse{Type: typ, SequenceNumber: r.seq}
+	r.seq++
+	return e
+}
+
+func (r *responsesEvents) created() *schemas.BifrostResponsesStreamResponse {
+	e := r.ev(schemas.ResponsesStreamResponseTypeCreated)
+	e.Response = &schemas.BifrostResponsesResponse{ID: schemas.Ptr(r.respID)}
+	return e
+}
+
+func (r *responsesEvents) item(typ schemas.ResponsesStreamResponseType, index int, item schemas.ResponsesMessage) *schemas.BifrostResponsesStreamResponse {
+	e := r.ev(typ)
+	e.OutputIndex = schemas.Ptr(index)
+	e.Item = &item
+	return e
+}
+
+func (r *responsesEvents) textDelta(index int, itemID, text string) *schemas.BifrostResponsesStreamResponse {
+	e := r.ev(schemas.ResponsesStreamResponseTypeOutputTextDelta)
+	e.OutputIndex = schemas.Ptr(index)
+	e.ItemID = schemas.Ptr(itemID)
+	e.Delta = schemas.Ptr(text)
+	return e
+}
+
+func (r *responsesEvents) argsDelta(index int, itemID, args string) *schemas.BifrostResponsesStreamResponse {
+	e := r.ev(schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta)
+	e.OutputIndex = schemas.Ptr(index)
+	e.ItemID = schemas.Ptr(itemID)
+	e.Delta = schemas.Ptr(args)
+	return e
+}
+
+func (r *responsesEvents) completed(input int) *schemas.BifrostResponsesStreamResponse {
+	e := r.ev(schemas.ResponsesStreamResponseTypeCompleted)
+	e.Response = &schemas.BifrostResponsesResponse{
+		ID:    schemas.Ptr(r.respID),
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: input, OutputTokens: 1, TotalTokens: input + 1},
+	}
+	return e
+}
+
+func textItem(id, text string) schemas.ResponsesMessage {
+	m := responsesText(text)
+	m.ID = schemas.Ptr(id)
+	return m
+}
+
+func feedResponses(s *injectedResponsesStream, events ...*schemas.BifrostResponsesStreamResponse) []responsesEmit {
+	var out []responsesEmit
+	for i, e := range events {
+		out = append(out, s.onEvent(e, i == len(events)-1)...)
+	}
+	return out
+}
+
+func TestInjectedResponsesStream_TwoTurnsBecomeOneResponse(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	t1 := &responsesEvents{respID: "resp_1"}
+	turn1 := feedResponses(s,
+		t1.created(),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, textItem("msg_1", "")),
+		t1.textDelta(0, "msg_1", "Searching."),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, textItem("msg_1", "Searching.")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c1", "tavily-search")),
+		t1.argsDelta(1, "fc_c1", `{"query":"q"}`),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c1", "tavily-search")),
+		t1.completed(10),
+	)
+	require.True(t, s.continues())
+	items, injected := s.endTurn()
+	require.Len(t, injected, 1)
+	assert.Equal(t, "c1", *injected[0].ID)
+	require.Len(t, items, 2, "the turn's text and the injected call are replayed")
+
+	t2 := &responsesEvents{respID: "resp_2"}
+	turn2 := feedResponses(s,
+		t2.created(),
+		t2.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, textItem("msg_2", "")),
+		t2.textDelta(0, "msg_2", "Sunny."),
+		t2.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, textItem("msg_2", "Sunny.")),
+		t2.completed(20),
+	)
+	assert.False(t, s.continues())
+
+	all := append(turn1, turn2...)
+	var types []schemas.ResponsesStreamResponseType
+	var indexes []int
+	for i, e := range all {
+		assert.Equal(t, i, e.event.SequenceNumber, "sequence numbers run across turns without gaps")
+		types = append(types, e.event.Type)
+		if e.event.OutputIndex != nil {
+			indexes = append(indexes, *e.event.OutputIndex)
+		}
+		assert.NotEqual(t, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, e.event.Type, "no injected call event reaches the client")
+	}
+	assert.Equal(t, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded, schemas.ResponsesStreamResponseTypeOutputTextDelta, schemas.ResponsesStreamResponseTypeOutputItemDone,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded, schemas.ResponsesStreamResponseTypeOutputTextDelta, schemas.ResponsesStreamResponseTypeOutputItemDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}, types)
+	assert.Equal(t, []int{0, 0, 0, 1, 1, 1}, indexes, "the second turn's message takes the next client output index")
+
+	last := all[len(all)-1]
+	require.True(t, last.terminal)
+	assert.Equal(t, "resp_1", *last.event.Response.ID)
+	require.Len(t, last.event.Response.Output, 2)
+	assert.Equal(t, 30, last.event.Response.Usage.InputTokens)
+}
+
+func TestInjectedResponsesStream_ClientCallIsReleasedAtTurnEnd(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	r := &responsesEvents{respID: "resp_1"}
+	emits := feedResponses(s,
+		r.created(),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "get_weather")),
+		r.argsDelta(0, "fc_c1", `{}`),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "get_weather")),
+		r.completed(5),
+	)
+	assert.False(t, s.continues())
+	var types []schemas.ResponsesStreamResponseType
+	for _, e := range emits {
+		types = append(types, e.event.Type)
+	}
+	assert.Equal(t, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		schemas.ResponsesStreamResponseTypeOutputItemDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}, types, "the client call's events are held, then released in order before completion")
+	last := emits[len(emits)-1]
+	require.Len(t, last.event.Response.Output, 1)
+	assert.Equal(t, "c1", *last.event.Response.Output[0].CallID)
+}
+
+func TestInjectedResponsesStream_ClientCallBeforeInjectedCallIsDropped(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	r := &responsesEvents{respID: "resp_1"}
+	emits := feedResponses(s,
+		r.created(),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "get_weather")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "get_weather")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c2", "tavily-search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c2", "tavily-search")),
+		r.completed(5),
+	)
+	require.Len(t, emits, 1, "only response.created reaches the client")
+	require.True(t, s.continues())
+	items, injected := s.endTurn()
+	require.Len(t, injected, 1)
+	require.Len(t, items, 1, "the client call is not replayed: it has no output to pair with")
+	assert.Equal(t, "c2", *items[0].CallID)
+}
