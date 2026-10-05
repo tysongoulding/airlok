@@ -15,7 +15,14 @@ func SetMCPExecutionAuthorization(ctx *schemas.BifrostContext, clientName, toolN
 }
 
 // hasMCPExecutionAuthorization prevents approval from following a retargeted request.
+//
+// Core's provider-injected tool marker is the second approval source: Bifrost sets it
+// when it runs the tool an operator configured in the provider's injected_tools, which
+// no virtual key grant lists. It names one exact prefixed tool, like the approval above.
 func hasMCPExecutionAuthorization(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) bool {
+	if injected, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolExecution).(string); injected != "" && injected == req.GetToolName() {
+		return true
+	}
 	approval, ok := ctx.Value(mcpAuthorizationContextKey).(mcpAuthorization)
 	return ok && approval.clientName != "" && approval.toolName != "" && req.ClientName == approval.clientName && req.GetToolName() == approval.toolName
 }
