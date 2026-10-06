@@ -407,6 +407,7 @@ const (
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyUserRoleID                          BifrostContextKey = "bifrost-user-role-id"
+	BifrostContextKeyUserRole                            BifrostContextKey = "bifrost-user-role"
 	BifrostContextKeyRuntimeVersion                      BifrostContextKey = "bifrost-runtime-version" // string (this build's version; set at server bootstrap - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)

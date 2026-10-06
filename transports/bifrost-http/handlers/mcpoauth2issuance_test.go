@@ -1057,3 +1057,78 @@ func TestUpdateConfig_RedirectPolicyPublishRacesNoReader(t *testing.T) {
 	<-done
 	require.True(t, oauth2RedirectAllowed(cfg, "https://new.example/cb"))
 }
+
+// TestHandleToken_RFC8693_TokenExchange_PersistentCachingAndSingleFlight validates
+// that OAuth2IssuanceHandler persists its FederatedTokenExchanger across requests,
+// reusing cached exchanged tokens and collapsing concurrent requests via single-flight deduplication.
+func TestHandleToken_RFC8693_TokenExchange_PersistentCachingAndSingleFlight(t *testing.T) {
+	h, _, _ := newIssuanceHandler(t)
+	require.NotNil(t, h.TokenExchanger(), "tokenExchanger must be initialized on issuance handler")
+
+	// 1. Initial exchange request
+	body := "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&subject_token=user-subject-token-123&audience=https://api.github.com"
+	ctx1 := formPostCtx(body)
+	h.handleToken(ctx1)
+	require.Equal(t, fasthttp.StatusOK, ctx1.Response.StatusCode(), string(ctx1.Response.Body()))
+
+	var resp1 map[string]interface{}
+	require.NoError(t, json.Unmarshal(ctx1.Response.Body(), &resp1))
+	tok1, ok := resp1["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, tok1)
+	assert.Equal(t, "Bearer", resp1["token_type"])
+	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", resp1["issued_token_type"])
+
+	// 2. Second request with same subject_token & audience must hit persistent cache and yield identical token
+	ctx2 := formPostCtx(body)
+	h.handleToken(ctx2)
+	require.Equal(t, fasthttp.StatusOK, ctx2.Response.StatusCode(), string(ctx2.Response.Body()))
+
+	var resp2 map[string]interface{}
+	require.NoError(t, json.Unmarshal(ctx2.Response.Body(), &resp2))
+	tok2 := resp2["access_token"].(string)
+	assert.Equal(t, tok1, tok2, "second HTTP request must hit persistent cache and return identical token")
+
+	// 3. Concurrent thundering herd: 50 concurrent HTTP requests must all receive the identical token
+	concurrency := 50
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	tokens := make([]string, concurrency)
+	statusCodes := make([]int, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			c := formPostCtx("grant_type=urn:ietf:params:oauth:grant-type:token-exchange&subject_token=concurrent-http-subject&audience=https://api.slack.com")
+			h.handleToken(c)
+			statusCodes[idx] = c.Response.StatusCode()
+			var r map[string]interface{}
+			if err := json.Unmarshal(c.Response.Body(), &r); err == nil {
+				if tVal, ok := r["access_token"].(string); ok {
+					tokens[idx] = tVal
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	firstConcTok := tokens[0]
+	require.NotEmpty(t, firstConcTok)
+	for i := 0; i < concurrency; i++ {
+		assert.Equal(t, fasthttp.StatusOK, statusCodes[i], "request %d failed", i)
+		assert.Equal(t, firstConcTok, tokens[i], "request %d got divergent token", i)
+	}
+
+	// 4. Input validation errors
+	ctxMissingSub := formPostCtx("grant_type=urn:ietf:params:oauth:grant-type:token-exchange&audience=https://api.github.com")
+	h.handleToken(ctxMissingSub)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctxMissingSub.Response.StatusCode())
+
+	ctxMissingAud := formPostCtx("grant_type=urn:ietf:params:oauth:grant-type:token-exchange&subject_token=valid-token")
+	h.handleToken(ctxMissingAud)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctxMissingAud.Response.StatusCode())
+
+	ctxExpired := formPostCtx("grant_type=urn:ietf:params:oauth:grant-type:token-exchange&subject_token=expired-token-xyz&audience=https://api.github.com")
+	h.handleToken(ctxExpired)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctxExpired.Response.StatusCode())
+}

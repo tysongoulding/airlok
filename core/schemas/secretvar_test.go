@@ -942,3 +942,21 @@ func TestSecretVar_VertexAWSWorkloadIdentityRoundTrip(t *testing.T) {
 		t.Errorf("aws_workload_identity must be omitted when unset: %s", plain)
 	}
 }
+
+func TestSecretVar_PrefixTrimming_BothSchemes(t *testing.T) {
+	vDot := &SecretVar{ref: "vault.bifrost/keys/gemini", SecretType: SecretTypeVault}
+	if got := vDot.VaultPath(); got != "bifrost/keys/gemini" {
+		t.Errorf("expected 'bifrost/keys/gemini', got %q", got)
+	}
+	if got := vDot.GetRef(); got != "bifrost/keys/gemini" {
+		t.Errorf("expected 'bifrost/keys/gemini', got %q", got)
+	}
+
+	vURI := &SecretVar{ref: "vault://bifrost/keys/gemini", SecretType: SecretTypeVault}
+	if got := vURI.VaultPath(); got != "bifrost/keys/gemini" {
+		t.Errorf("expected 'bifrost/keys/gemini', got %q", got)
+	}
+	if got := vURI.GetRef(); got != "bifrost/keys/gemini" {
+		t.Errorf("expected 'bifrost/keys/gemini', got %q", got)
+	}
+}

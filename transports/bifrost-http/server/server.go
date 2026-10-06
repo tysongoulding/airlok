@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/diagnostics"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -268,6 +269,13 @@ type BifrostHTTPServer struct {
 	IntegrationHandler   *handlers.IntegrationHandler
 	wsLiveHandler        *handlers.WSLiveHandler
 	webrtcLiveHandler    *handlers.WebRTCLiveHandler
+
+	VaultResolver        handlers.VaultCacheFlusher
+	ClusterCoordinator   handlers.ClusterBroadcaster
+	SSOHandler           *handlers.SSOHandler
+	SSOMiddleware        *handlers.SSOMiddleware
+	DiagnosticsHandler   *handlers.DiagnosticsHandler
+	RBACMiddleware       *handlers.RBACMiddleware
 
 	AuthMiddleware       *handlers.AuthMiddleware
 	CORSMiddleware       *handlers.CorsMiddleware
@@ -2778,6 +2786,28 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	// Register Airlok harness adapter & GitOps endpoints
 	handlers.NewAirlokHarnessHandler(os.Getenv("AIRLOK_REPO_PATH")).RegisterRoutes(s.Router, middlewares...)
+	// Register Airlok Vault management handler (POST /api/vault/flush-cache)
+	handlers.NewVaultHandler(s.VaultResolver, s.ClusterCoordinator).RegisterRoutes(s.Router, middlewares...)
+	if s.ClusterCoordinator != nil && s.VaultResolver != nil {
+		if receiver, ok := s.ClusterCoordinator.(interface {
+			RegisterStateReceiver(entity string, handler func(ctx context.Context, entityType string, payload []byte) error)
+		}); ok {
+			receiver.RegisterStateReceiver("vault_flush", func(ctx context.Context, entity string, payload []byte) error {
+				s.VaultResolver.FlushCache()
+				return nil
+			})
+		}
+	}
+	// Register Enterprise SSO handler & routes
+	if s.SSOHandler != nil {
+		s.SSOHandler.RegisterRoutes(s.Router, middlewares...)
+	}
+	// Register Enterprise Diagnostics handler & routes
+	if s.DiagnosticsHandler != nil {
+		s.DiagnosticsHandler.RegisterRoutes(s.Router, middlewares...)
+	} else {
+		handlers.NewDiagnosticsHandler(diagnostics.NewSLATracker()).RegisterRoutes(s.Router, middlewares...)
+	}
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
 		logger.Info("dev mode enabled, registering pprof endpoints")
@@ -3191,6 +3221,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.APIMiddleware())
+		} else if s.SSOMiddleware != nil {
+			apiMiddlewares = append(apiMiddlewares, s.SSOMiddleware.Middleware())
+		}
+		if s.RBACMiddleware != nil {
+			apiMiddlewares = append(apiMiddlewares, s.RBACMiddleware.PathInspectorMiddleware())
 		}
 	}
 	// Add semantic cache plugin embedding request executor if it exists

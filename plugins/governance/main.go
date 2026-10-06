@@ -152,17 +152,210 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+	dualPlaneACLMu        sync.RWMutex
 	dualPlaneACL          *DualPlaneACL
+	guardrailsMu          sync.RWMutex
+	guardrails            GuardrailEvaluator
+	streamInspector       *StreamInspector
+
+	loadBalancerMu  sync.RWMutex
+	loadBalancer    *AdaptiveLoadBalancer
+	circuitBreakers *CircuitBreakerManager
+
+	tokenExchangerMu     sync.RWMutex
+	tokenExchanger       TokenExchanger
+	virtualMCPRegistryMu sync.RWMutex
+	virtualMCPRegistry   *VirtualMCPRegistry
 }
 
 // SetDualPlaneACL configures the active dual-plane ACL policy.
 func (p *GovernancePlugin) SetDualPlaneACL(acl *DualPlaneACL) {
+	p.dualPlaneACLMu.Lock()
+	defer p.dualPlaneACLMu.Unlock()
 	p.dualPlaneACL = acl
 }
 
 // GetDualPlaneACL returns the active dual-plane ACL policy.
 func (p *GovernancePlugin) GetDualPlaneACL() *DualPlaneACL {
+	p.dualPlaneACLMu.RLock()
+	defer p.dualPlaneACLMu.RUnlock()
 	return p.dualPlaneACL
+}
+
+// SetTokenExchanger sets the active TokenExchanger instance.
+func (p *GovernancePlugin) SetTokenExchanger(te TokenExchanger) {
+	p.tokenExchangerMu.Lock()
+	defer p.tokenExchangerMu.Unlock()
+	p.tokenExchanger = te
+}
+
+// GetTokenExchanger returns the active TokenExchanger instance, initializing a default if nil.
+func (p *GovernancePlugin) GetTokenExchanger() TokenExchanger {
+	p.tokenExchangerMu.RLock()
+	if p.tokenExchanger != nil {
+		te := p.tokenExchanger
+		p.tokenExchangerMu.RUnlock()
+		return te
+	}
+	p.tokenExchangerMu.RUnlock()
+
+	p.tokenExchangerMu.Lock()
+	defer p.tokenExchangerMu.Unlock()
+	if p.tokenExchanger == nil {
+		p.tokenExchanger = NewFederatedTokenExchanger()
+	}
+	return p.tokenExchanger
+}
+
+// ExchangeToken implements TokenExchanger delegation on GovernancePlugin.
+func (p *GovernancePlugin) ExchangeToken(ctx context.Context, subjectToken, audience string) (string, error) {
+	return p.GetTokenExchanger().ExchangeToken(ctx, subjectToken, audience)
+}
+
+// SetVirtualMCPRegistry sets the active VirtualMCPRegistry instance.
+func (p *GovernancePlugin) SetVirtualMCPRegistry(r *VirtualMCPRegistry) {
+	p.virtualMCPRegistryMu.Lock()
+	defer p.virtualMCPRegistryMu.Unlock()
+	p.virtualMCPRegistry = r
+}
+
+// GetVirtualMCPRegistry returns the active VirtualMCPRegistry instance, initializing a default if nil.
+func (p *GovernancePlugin) GetVirtualMCPRegistry() *VirtualMCPRegistry {
+	p.virtualMCPRegistryMu.RLock()
+	if p.virtualMCPRegistry != nil {
+		r := p.virtualMCPRegistry
+		p.virtualMCPRegistryMu.RUnlock()
+		return r
+	}
+	p.virtualMCPRegistryMu.RUnlock()
+
+	p.virtualMCPRegistryMu.Lock()
+	defer p.virtualMCPRegistryMu.Unlock()
+	if p.virtualMCPRegistry == nil {
+		p.virtualMCPRegistry = NewVirtualMCPRegistry(p.GetDualPlaneACL())
+	}
+	return p.virtualMCPRegistry
+}
+
+// RegisterVirtualMCP registers a new Virtual MCP.
+func (p *GovernancePlugin) RegisterVirtualMCP(slug, tenantID string, tools []string) *VirtualMCP {
+	return p.GetVirtualMCPRegistry().RegisterVirtualMCP(slug, tenantID, tools)
+}
+
+// SetUserPermissions configures per-user tool access within a Virtual MCP.
+func (p *GovernancePlugin) SetUserPermissions(slug, user string, allowedTools []string) error {
+	return p.GetVirtualMCPRegistry().SetUserPermissions(slug, user, allowedTools)
+}
+
+// CheckToolAccess verifies tool permissions across Virtual MCP, Connector ACL, and user scopes.
+func (p *GovernancePlugin) CheckToolAccess(slug, user, connector, tool string) (bool, PolicyAction, string) {
+	return p.GetVirtualMCPRegistry().CheckToolAccess(slug, user, connector, tool)
+}
+
+// CheckCrossPlaneDataBoundary validates that connector data does not leak into disallowed destination LLMs.
+func (p *GovernancePlugin) CheckCrossPlaneDataBoundary(sourceConnector, destinationLLMProvider string) error {
+	acl := p.GetDualPlaneACL()
+	if acl != nil {
+		return acl.CheckCrossPlaneDataBoundary(sourceConnector, destinationLLMProvider)
+	}
+	return nil
+}
+
+// SetGuardrails configures the active content guardrails engine.
+func (p *GovernancePlugin) SetGuardrails(g GuardrailEvaluator) {
+	p.guardrailsMu.Lock()
+	defer p.guardrailsMu.Unlock()
+	p.guardrails = g
+}
+
+// GetGuardrails returns the active content guardrails engine.
+func (p *GovernancePlugin) GetGuardrails() GuardrailEvaluator {
+	p.guardrailsMu.RLock()
+	defer p.guardrailsMu.RUnlock()
+	return p.guardrails
+}
+
+// SetLoadBalancer sets the adaptive load balancer engine.
+func (p *GovernancePlugin) SetLoadBalancer(lb *AdaptiveLoadBalancer) {
+	p.loadBalancerMu.Lock()
+	defer p.loadBalancerMu.Unlock()
+	p.loadBalancer = lb
+}
+
+// GetLoadBalancer returns the adaptive load balancer engine.
+func (p *GovernancePlugin) GetLoadBalancer() *AdaptiveLoadBalancer {
+	p.loadBalancerMu.RLock()
+	defer p.loadBalancerMu.RUnlock()
+	return p.loadBalancer
+}
+
+// SetCircuitBreakers sets the circuit breaker manager.
+func (p *GovernancePlugin) SetCircuitBreakers(cbm *CircuitBreakerManager) {
+	p.loadBalancerMu.Lock()
+	defer p.loadBalancerMu.Unlock()
+	p.circuitBreakers = cbm
+}
+
+// GetCircuitBreakers returns the circuit breaker manager.
+func (p *GovernancePlugin) GetCircuitBreakers() *CircuitBreakerManager {
+	p.loadBalancerMu.RLock()
+	defer p.loadBalancerMu.RUnlock()
+	return p.circuitBreakers
+}
+
+// KeyPoolFilter filters available keys using the adaptive load balancer and circuit breaker.
+func (p *GovernancePlugin) KeyPoolFilter(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, keys []schemas.Key) ([]schemas.Key, error) {
+	p.loadBalancerMu.RLock()
+	lb := p.loadBalancer
+	cbm := p.circuitBreakers
+	p.loadBalancerMu.RUnlock()
+
+	eligible := keys
+	var err error
+	if lb != nil {
+		eligible, err = lb.KeyPoolFilter(ctx, provider, model, eligible)
+		if err != nil {
+			return eligible, err
+		}
+	}
+	if cbm != nil {
+		eligible, err = cbm.KeyPoolFilter(ctx, provider, model, eligible)
+		if err != nil {
+			return eligible, err
+		}
+	}
+	return eligible, nil
+}
+
+// KeySelector selects a key using the adaptive load balancer or default selection.
+func (p *GovernancePlugin) KeySelector(ctx *schemas.BifrostContext, keys []schemas.Key, provider schemas.ModelProvider, model string) (schemas.Key, error) {
+	p.loadBalancerMu.RLock()
+	lb := p.loadBalancer
+	p.loadBalancerMu.RUnlock()
+
+	if lb != nil {
+		return lb.SelectKey(ctx, keys, provider, model)
+	}
+	if len(keys) == 0 {
+		return schemas.Key{}, errors.New("no available keys")
+	}
+	return keys[0], nil
+}
+
+func (p *GovernancePlugin) getStreamInspector() *StreamInspector {
+	p.guardrailsMu.RLock()
+	si := p.streamInspector
+	p.guardrailsMu.RUnlock()
+	if si != nil {
+		return si
+	}
+
+	p.guardrailsMu.Lock()
+	defer p.guardrailsMu.Unlock()
+	if p.streamInspector == nil {
+		p.streamInspector = NewStreamInspector()
+	}
+	return p.streamInspector
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -249,6 +442,10 @@ func Init(
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 
 	ctx, cancelFunc := context.WithCancel(ctx)
+	lb := NewAdaptiveLoadBalancer()
+	cbm := NewCircuitBreakerManager()
+	lb.CircuitBreakers = cbm
+
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
 		cancelFunc:            cancelFunc,
@@ -265,6 +462,10 @@ func Init(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
+		guardrails:            DefaultGuardrailsEngine(),
+		streamInspector:       NewStreamInspector(),
+		loadBalancer:          lb,
+		circuitBreakers:       cbm,
 	}
 	return plugin, nil
 }
@@ -315,6 +516,10 @@ func InitFromStore(
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
 	ctx, cancelFunc := context.WithCancel(ctx)
+	lb := NewAdaptiveLoadBalancer()
+	cbm := NewCircuitBreakerManager()
+	lb.CircuitBreakers = cbm
+
 	plugin := &GovernancePlugin{
 		ctx:                   ctx,
 		cancelFunc:            cancelFunc,
@@ -331,6 +536,10 @@ func InitFromStore(
 		requiredHeaders:       requiredHeaders,
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
+		guardrails:            DefaultGuardrailsEngine(),
+		streamInspector:       NewStreamInspector(),
+		loadBalancer:          lb,
+		circuitBreakers:       cbm,
 	}
 	return plugin, nil
 }
@@ -413,8 +622,16 @@ func (p *GovernancePlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostCo
 	return nil
 }
 
-// HTTPTransportStreamChunkHook passes through streaming chunks unchanged
+// HTTPTransportStreamChunkHook inspects streaming chunks for guardrail violations.
 func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
+	p.guardrailsMu.RLock()
+	gr := p.guardrails
+	p.guardrailsMu.RUnlock()
+
+	if gr != nil {
+		inspector := p.getStreamInspector()
+		return inspector.InspectChunk(ctx, req, chunk, gr)
+	}
 	return chunk, nil
 }
 
@@ -427,6 +644,9 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 // holder paying, which for a caller granted access by something other than a key is not answerable
 // from a key at all. Nothing is passed, so nothing can be passed wrongly.
 func (p *GovernancePlugin) GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+	if p == nil || p.store == nil {
+		return nil
+	}
 	return p.store.GetBudgetAndRateLimitStatus(ctx, provider, model, budgetBaselines, tokenBaselines, requestBaselines)
 }
 
@@ -1000,6 +1220,9 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if access := g.Access(); access != nil {
 		return access, nil
 	}
+	if p == nil || p.store == nil {
+		return nil, nil
+	}
 	bases, scoping, mode := p.store.ResolvePermits(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
@@ -1053,6 +1276,9 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	if g == nil {
 		return nil, nil
 	}
+	if store == nil {
+		return nil, nil
+	}
 	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
 	if err != nil {
 		return nil, err
@@ -1076,6 +1302,14 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
 		return nil
+	}
+
+	// Dynamic circuit breaker failover check
+	p.loadBalancerMu.RLock()
+	cbm := p.circuitBreakers
+	p.loadBalancerMu.RUnlock()
+	if cbm != nil {
+		cbm.CheckAndReroute(ctx, req)
 	}
 
 	// The request's provider is a fact access resolution needs to apply provider-scoped grants, and it
@@ -1138,12 +1372,74 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
 	}
+
+	// Dynamic circuit breaker failover check
+	p.loadBalancerMu.RLock()
+	cbm := p.circuitBreakers
+	p.loadBalancerMu.RUnlock()
+	if cbm != nil {
+		cbm.CheckAndReroute(ctx, req)
+	}
+
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
 
 	// Airlok Dual-Plane ACL check
-	if p.dualPlaneACL != nil {
-		action, reason := p.dualPlaneACL.CheckLLM(provider, model)
+	acl := p.GetDualPlaneACL()
+	if acl != nil {
+		// Feature 35: Cross-Plane Data Boundary Leak Prevention
+		destProvider := strings.ToLower(string(provider))
+		activeConnectors := GetActiveConnectors(ctx)
+
+		// Inspect chat messages for prior tool results / tool calls
+		if req.ChatRequest != nil {
+			toolCallMap := make(map[string]string)
+			for _, msg := range req.ChatRequest.Input {
+				if msg.ChatAssistantMessage != nil {
+					for _, tc := range msg.ChatAssistantMessage.ToolCalls {
+						if tc.Function.Name != nil && *tc.Function.Name != "" {
+							connName := acl.ExtractConnectorName(*tc.Function.Name)
+							if connName != "" {
+								activeConnectors = append(activeConnectors, connName)
+								if tc.ID != nil && *tc.ID != "" {
+									toolCallMap[*tc.ID] = connName
+								}
+							}
+						}
+					}
+				}
+			}
+			for _, msg := range req.ChatRequest.Input {
+				if msg.ChatToolMessage != nil {
+					var connName string
+					if msg.Name != nil && *msg.Name != "" {
+						connName = acl.ExtractConnectorName(*msg.Name)
+					} else if msg.ChatToolMessage.ToolCallID != nil && *msg.ChatToolMessage.ToolCallID != "" {
+						connName = toolCallMap[*msg.ChatToolMessage.ToolCallID]
+					}
+					if connName != "" {
+						activeConnectors = append(activeConnectors, connName)
+					}
+				}
+			}
+		}
+
+		for _, conn := range activeConnectors {
+			if err := acl.CheckCrossPlaneDataBoundary(conn, destProvider); err != nil {
+				return req, &schemas.LLMPluginShortCircuit{
+					Error: &schemas.BifrostError{
+						Type:           bifrost.Ptr("cross_plane_violation"),
+						StatusCode:     bifrost.Ptr(403),
+						AllowFallbacks: bifrost.Ptr(false),
+						Error: &schemas.ErrorField{
+							Message: err.Error(),
+						},
+					},
+				}, nil
+			}
+		}
+
+		action, reason := acl.CheckLLM(provider, model)
 		if action == PolicyActionDeny {
 			return req, &schemas.LLMPluginShortCircuit{
 				Error: &schemas.BifrostError{
@@ -1159,6 +1455,67 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			ctx.SetValue(schemas.BifrostContextKey("airlok_audit_monitored"), true)
 		}
 	}
+
+	// Airlok Content Guardrails Evaluation
+	p.guardrailsMu.RLock()
+	gr := p.guardrails
+	p.guardrailsMu.RUnlock()
+	if gr != nil {
+		result, err := gr.EvaluateInput(ctx, req)
+		if err != nil {
+			p.logger.Warn(fmt.Sprintf("guardrails evaluation failed: %v", err))
+		} else if result != nil {
+			switch result.Action {
+			case ActionBlock:
+				reason := result.Reason
+				if reason == "" {
+					reason = result.InterventionReason
+				}
+				if reason == "" {
+					reason = fmt.Sprintf("Guardrail violation: [%s] blocked the request", result.RuleName)
+				}
+				return req, &schemas.LLMPluginShortCircuit{
+					Error: &schemas.BifrostError{
+						IsBifrostError: true,
+						StatusCode:     bifrost.Ptr(422),
+						Type:           bifrost.Ptr("guardrail_violation"),
+						AllowFallbacks: bifrost.Ptr(false),
+						Error: &schemas.ErrorField{
+							Message: reason,
+							Type:    bifrost.Ptr("guardrail_violation"),
+							Code:    bifrost.Ptr("guardrail_intervention"),
+							Param: map[string]interface{}{
+								"rule_id":           result.RuleID,
+								"rule_name":         result.RuleName,
+								"action":            "block",
+								"detected_entities": result.DetectedEntities,
+							},
+						},
+					},
+				}, nil
+
+			case ActionRedact:
+				p.applyRedactionToContextAndRequest(ctx, req, result)
+
+			case ActionDetectOnly:
+				schemas.AppendGuardrailDetectionOnContext(ctx, schemas.BifrostGuardrailDetection{
+					Phase:             string(schemas.RedactionPhaseInput),
+					RuleID:            bifrost.Ptr(uint(result.RuleID)),
+					RuleName:          result.RuleName,
+					GuardrailName:     result.PolicyName,
+					GuardrailProvider: "in_process",
+					Reason:            result.Reason,
+					Assessments:       result.DetectedEntities,
+				})
+			}
+		}
+	}
+
+	// If store and resolver are not configured, skip budget and rate limit checks
+	if p.store == nil && p.resolver == nil {
+		return req, nil, nil
+	}
+
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
 		RequestType:      req.RequestType,
@@ -1246,6 +1603,165 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	return models
 }
 
+func (p *GovernancePlugin) applyRedactionToContextAndRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, result *GuardrailResult) {
+	if ctx == nil || result == nil || len(result.LiteralMap) == 0 {
+		return
+	}
+
+	// 1. Plumb schemas.RedactionData onto ctx
+	redactionData, exists := schemas.RedactionDataFromContext(ctx)
+	if !exists {
+		redactionData = schemas.RedactionData{
+			LiteralReplacements: schemas.RedactionMapsByPhase{
+				Input:  make(map[string]string),
+				Output: make(map[string]string),
+			},
+			ReversibleMappings: schemas.RedactionMapsByPhase{
+				Input:  make(map[string]string),
+				Output: make(map[string]string),
+			},
+		}
+	}
+	if redactionData.LiteralReplacements.Input == nil {
+		redactionData.LiteralReplacements.Input = make(map[string]string)
+	}
+	redactionData.LiteralReplacements.MergePhase(schemas.RedactionPhaseInput, result.LiteralMap)
+	if len(result.ReversibleMap) > 0 {
+		if redactionData.ReversibleMappings.Input == nil {
+			redactionData.ReversibleMappings.Input = make(map[string]string)
+		}
+		redactionData.ReversibleMappings.MergePhase(schemas.RedactionPhaseInput, result.ReversibleMap)
+	}
+	schemas.SetRedactionDataOnContext(ctx, redactionData)
+
+	// Attach detection metadata to context
+	schemas.AppendGuardrailDetectionOnContext(ctx, schemas.BifrostGuardrailDetection{
+		Phase:             string(schemas.RedactionPhaseInput),
+		RuleID:            bifrost.Ptr(uint(result.RuleID)),
+		RuleName:          result.RuleName,
+		GuardrailName:     result.PolicyName,
+		GuardrailProvider: "in_process",
+		Reason:            result.Reason,
+		Assessments:       result.DetectedEntities,
+	})
+
+	// 2. Perform in-place runtime rewriting of request message contents
+	if req.ChatRequest != nil {
+		for i := range req.ChatRequest.Input {
+			msg := &req.ChatRequest.Input[i]
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					redacted := *msg.Content.ContentStr
+					for orig, repl := range result.LiteralMap {
+						redacted = strings.ReplaceAll(redacted, orig, repl)
+					}
+					msg.Content.ContentStr = &redacted
+				}
+				for j := range msg.Content.ContentBlocks {
+					block := &msg.Content.ContentBlocks[j]
+					if block.Text != nil {
+						redacted := *block.Text
+						for orig, repl := range result.LiteralMap {
+							redacted = strings.ReplaceAll(redacted, orig, repl)
+						}
+						block.Text = &redacted
+					}
+				}
+			}
+		}
+	}
+	if req.TextCompletionRequest != nil && req.TextCompletionRequest.Input != nil {
+		if req.TextCompletionRequest.Input.PromptStr != nil {
+			redacted := *req.TextCompletionRequest.Input.PromptStr
+			for orig, repl := range result.LiteralMap {
+				redacted = strings.ReplaceAll(redacted, orig, repl)
+			}
+			req.TextCompletionRequest.Input.PromptStr = &redacted
+		}
+	}
+}
+
+func (p *GovernancePlugin) applyRedactionToOutput(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, result *GuardrailResult) {
+	if ctx == nil || resp == nil || result == nil || len(result.LiteralMap) == 0 {
+		return
+	}
+
+	// 1. Plumb schemas.RedactionData onto ctx
+	redactionData, exists := schemas.RedactionDataFromContext(ctx)
+	if !exists {
+		redactionData = schemas.RedactionData{
+			LiteralReplacements: schemas.RedactionMapsByPhase{
+				Input:  make(map[string]string),
+				Output: make(map[string]string),
+			},
+			ReversibleMappings: schemas.RedactionMapsByPhase{
+				Input:  make(map[string]string),
+				Output: make(map[string]string),
+			},
+		}
+	}
+	if redactionData.LiteralReplacements.Output == nil {
+		redactionData.LiteralReplacements.Output = make(map[string]string)
+	}
+	redactionData.LiteralReplacements.MergePhase(schemas.RedactionPhaseOutput, result.LiteralMap)
+	if len(result.ReversibleMap) > 0 {
+		if redactionData.ReversibleMappings.Output == nil {
+			redactionData.ReversibleMappings.Output = make(map[string]string)
+		}
+		redactionData.ReversibleMappings.MergePhase(schemas.RedactionPhaseOutput, result.ReversibleMap)
+	}
+	schemas.SetRedactionDataOnContext(ctx, redactionData)
+
+	// Attach detection metadata to context
+	schemas.AppendGuardrailDetectionOnContext(ctx, schemas.BifrostGuardrailDetection{
+		Phase:             string(schemas.RedactionPhaseOutput),
+		RuleID:            bifrost.Ptr(uint(result.RuleID)),
+		RuleName:          result.RuleName,
+		GuardrailName:     result.PolicyName,
+		GuardrailProvider: "in_process",
+		Reason:            result.Reason,
+		Assessments:       result.DetectedEntities,
+	})
+
+	// 2. Perform in-place runtime rewriting of response choices
+	if resp.ChatResponse != nil {
+		for i := range resp.ChatResponse.Choices {
+			choice := &resp.ChatResponse.Choices[i]
+			if choice.Message != nil && choice.Message.Content != nil {
+				if choice.Message.Content.ContentStr != nil {
+					redacted := *choice.Message.Content.ContentStr
+					for orig, repl := range result.LiteralMap {
+						redacted = strings.ReplaceAll(redacted, orig, repl)
+					}
+					choice.Message.Content.ContentStr = &redacted
+				}
+				for j := range choice.Message.Content.ContentBlocks {
+					block := &choice.Message.Content.ContentBlocks[j]
+					if block.Text != nil {
+						redacted := *block.Text
+						for orig, repl := range result.LiteralMap {
+							redacted = strings.ReplaceAll(redacted, orig, repl)
+						}
+						block.Text = &redacted
+					}
+				}
+			}
+		}
+	}
+	if resp.TextCompletionResponse != nil {
+		for i := range resp.TextCompletionResponse.Choices {
+			choice := &resp.TextCompletionResponse.Choices[i]
+			if choice.Text != nil {
+				redacted := *choice.Text
+				for orig, repl := range result.LiteralMap {
+					redacted = strings.ReplaceAll(redacted, orig, repl)
+				}
+				choice.Text = &redacted
+			}
+		}
+	}
+}
+
 // PostLLMHook processes the response and updates usage tracking (business logic execution)
 // Parameters:
 //   - ctx: The Bifrost context
@@ -1261,8 +1777,91 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, err, nil
 	}
 
+	// Output Guardrail Evaluation
+	p.guardrailsMu.RLock()
+	gr := p.guardrails
+	p.guardrailsMu.RUnlock()
+	if gr != nil && result != nil {
+		outRes, outErr := gr.EvaluateOutput(ctx, result)
+		if outErr == nil && outRes != nil {
+			if outRes.Action == ActionBlock {
+				reason := outRes.Reason
+				if reason == "" {
+					reason = outRes.InterventionReason
+				}
+				if reason == "" {
+					reason = fmt.Sprintf("Guardrail violation: [%s] blocked the output response", outRes.RuleName)
+				}
+				return nil, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     bifrost.Ptr(422),
+					Type:           bifrost.Ptr("guardrail_violation"),
+					AllowFallbacks: bifrost.Ptr(false),
+					Error: &schemas.ErrorField{
+						Message: reason,
+						Type:    bifrost.Ptr("guardrail_violation"),
+						Code:    bifrost.Ptr("guardrail_intervention"),
+						Param: map[string]interface{}{
+							"rule_id":           outRes.RuleID,
+							"rule_name":         outRes.RuleName,
+							"action":            "block",
+							"detected_entities": outRes.DetectedEntities,
+						},
+					},
+				}, nil
+			} else if outRes.Action == ActionRedact && len(outRes.LiteralMap) > 0 {
+				p.applyRedactionToOutput(ctx, result, outRes)
+			}
+		}
+	}
+
+	// Adaptive Load Balancer & Circuit Breaker response inspection & metric updates
+	p.loadBalancerMu.RLock()
+	lb := p.loadBalancer
+	cbm := p.circuitBreakers
+	p.loadBalancerMu.RUnlock()
+
+	if lb != nil || cbm != nil {
+		_, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
+		keyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+
+		var headers map[string]string
+		if hdrs, ok := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+			headers = hdrs
+		} else if result != nil && result.GetExtraFields() != nil && result.GetExtraFields().ProviderResponseHeaders != nil {
+			headers = result.GetExtraFields().ProviderResponseHeaders
+		}
+
+		statusCode := 200
+		if err != nil && err.StatusCode != nil {
+			statusCode = *err.StatusCode
+		}
+
+		if cbm != nil && (requestedModel != "" || provider != "") {
+			cbm.InspectResponse(string(provider), requestedModel, headers, statusCode, keyID)
+		}
+
+		if lb != nil && keyID != "" {
+			lb.ReleaseInFlight(keyID)
+			latencyMs := 0.0
+			if result != nil && result.GetExtraFields() != nil && result.GetExtraFields().Latency > 0 {
+				latencyMs = float64(result.GetExtraFields().Latency)
+			} else if upstream, ok := schemas.GetUpstreamLatency(ctx); ok && upstream > 0 {
+				latencyMs = float64(upstream.Milliseconds())
+			}
+			isErr := err != nil
+			refusalCode := 0
+			if err != nil && err.StatusCode != nil {
+				refusalCode = *err.StatusCode
+			}
+			lb.RecordAttemptWithDetails(keyID, string(provider), requestedModel, latencyMs, isErr, refusalCode, err, headers)
+		}
+	}
+
 	if ctx.Grant() == nil {
-		p.logger.Warn("PostLLMHook called with no grant in context")
+		if p.logger != nil {
+			p.logger.Warn("PostLLMHook called with no grant in context")
+		}
 		return result, err, nil
 	}
 
@@ -1392,9 +1991,21 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 
 	// Airlok Dual-Plane ACL check for connectors/tools
-	if p.dualPlaneACL != nil {
-		action, reason := p.dualPlaneACL.CheckConnector(toolName, "")
-		if action == PolicyActionDeny {
+	acl := p.GetDualPlaneACL()
+	if acl != nil {
+		connectorName := req.ClientName
+		if connectorName == "" && toolName != "" {
+			connectorName = acl.ExtractConnectorName(toolName)
+		}
+
+		action, reason := acl.CheckConnector(connectorName, "")
+		ctx.SetValue(BifrostContextKeyMCPPolicyAction, action)
+
+		switch action {
+		case PolicyActionDeny:
+			if reason == "" {
+				reason = fmt.Sprintf("connector %s is blocked by security governance policy", connectorName)
+			}
 			return req, &schemas.MCPPluginShortCircuit{
 				Error: &schemas.BifrostError{
 					Type:       bifrost.Ptr("airlok_connector_blocked"),
@@ -1404,6 +2015,28 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 					},
 				},
 			}, nil
+
+		case PolicyActionRequireApproval:
+			approved := hasMCPExecutionAuthorization(ctx, req)
+			unattended, _ := ctx.Value(schemas.BifrostContextKeyMCPUnattendedExecution).(bool)
+			if unattended || !approved {
+				return req, &schemas.MCPPluginShortCircuit{
+					Error: &schemas.BifrostError{
+						Type:       bifrost.Ptr("airlok_approval_required"),
+						StatusCode: bifrost.Ptr(403),
+						Error: &schemas.ErrorField{
+							Message: fmt.Sprintf("connector %s tool %s requires authorization approval", connectorName, toolName),
+						},
+					},
+				}, nil
+			}
+
+		case PolicyActionAudit:
+			ctx.SetValue(BifrostContextKeyAuditMonitored, true)
+			ctx.SetValue(schemas.BifrostContextKey("airlok_audit_monitored"), true)
+
+		case PolicyActionAllow:
+			// proceed normally
 		}
 	}
 
@@ -1446,7 +2079,10 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// since asking the key again would answer the same question from a second source, and the two could
 	// disagree. What is left is a question about the tool, which the access answers whatever granted it.
 	// A request carrying no access is unrestricted and may execute any tool, as it always could.
-	access := ctx.Grant().Access()
+	var access schemas.Access
+	if g := ctx.Grant(); g != nil {
+		access = g.Access()
+	}
 	if access != nil && !access.IsMCPToolAllowed(toolName) && !hasMCPExecutionAuthorization(ctx, req) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
@@ -1525,6 +2161,18 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Determine if request was successful
 	success := (resp != nil && bifrostErr == nil)
 
+	// Feature 35: Track source connector provenance on context
+	if success && resp != nil {
+		connector := resp.ExtraFields.ClientName
+		if connector == "" && resp.ExtraFields.ToolName != "" {
+			acl := p.GetDualPlaneACL()
+			connector = acl.ExtractConnectorName(resp.ExtraFields.ToolName)
+		}
+		if connector != "" {
+			AddActiveConnector(ctx, connector)
+		}
+	}
+
 	// Skip usage tracking for codemode tools
 	if success && resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
 		return resp, bifrostErr, nil
@@ -1550,8 +2198,10 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// the deployment does charge for goes unbilled, and asking the key here would be a second answer
 	// to a question the grant already settled.
 	var budgets, rateLimits []schemas.Limit
-	if limits := ctx.Grant().Limits(); limits != nil {
-		budgets, rateLimits = limits.Budgets(), limits.RateLimits()
+	if g := ctx.Grant(); g != nil {
+		if limits := g.Limits(); limits != nil {
+			budgets, rateLimits = limits.Budgets(), limits.RateLimits()
+		}
 	}
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipVirtualKeyUsageTracking) {
 		// The holder's usage is not being counted; what the deployment and the user answer to still is.
@@ -1580,11 +2230,13 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	}
 
 	// Queue usage update asynchronously using tracker
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
-		p.tracker.UpdateUsage(p.ctx, usageUpdate)
-	}()
+	if p.tracker != nil {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.tracker.UpdateUsage(p.ctx, usageUpdate)
+		}()
+	}
 
 	return resp, bifrostErr, nil
 }
@@ -1609,6 +2261,9 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, error) {
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	if virtualKeyValue == "" {
+		return req, nil, nil
+	}
+	if p == nil || p.store == nil {
 		return req, nil, nil
 	}
 	vk, ok := p.store.GetVirtualKey(ctx, virtualKeyValue)
@@ -1656,6 +2311,12 @@ func (p *GovernancePlugin) Cleanup() error {
 			p.cancelFunc()
 		}
 		p.wg.Wait() // Wait for all background workers to complete
+		p.loadBalancerMu.RLock()
+		lb := p.loadBalancer
+		p.loadBalancerMu.RUnlock()
+		if lb != nil {
+			lb.Close()
+		}
 		if err := p.tracker.Cleanup(); err != nil {
 			cleanupErr = err
 		}
@@ -1766,7 +2427,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 
 		// Queue usage update asynchronously using tracker
 		// UpdateUsage handles empty virtual keys gracefully by only updating provider-level and model-level usage
-		p.tracker.UpdateUsage(p.ctx, usageUpdate)
+		if p.tracker != nil {
+			p.tracker.UpdateUsage(p.ctx, usageUpdate)
+		}
 	}
 }
 
@@ -1776,6 +2439,9 @@ func (p *GovernancePlugin) GetGovernanceStore() GovernanceStore {
 }
 
 func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.UsageReport) error {
+	if p == nil || p.store == nil {
+		return nil
+	}
 	var errs []error
 
 	if usage.Cost > 0 {

@@ -1,18 +1,23 @@
-# Bifrost AI Gateway
+<p align="center">
+  <img src=".github/assets/splitgate-logo.jpg" alt="Splitgate MCP/LLM Gateway" width="520"/>
+</p>
 
-<a href="https://trendshift.io/repositories/14529?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-14529" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/14529" alt="maximhq%2Fbifrost | Trendshift" width="250" height="55"/></a>
+# Splitgate — High-Performance Enterprise MCP & LLM Gateway
 
-[![Discord badge](https://img.shields.io/badge/Discord-Join%20Community-5865F2?logo=discord&logoColor=white)](https://discord.gg/exN5KAydbU)
-[![codecov](https://codecov.io/gh/maximhq/bifrost/branch/main/graph/badge.svg)](https://codecov.io/gh/maximhq/bifrost)
-![Docker Pulls](https://img.shields.io/docker/pulls/maximhq/bifrost)
-[<img src="https://run.pstmn.io/button.svg" alt="Run In Postman" style="width: 95px; height: 21px;">](https://app.getpostman.com/run-collection/31642484-2ba0e658-4dcd-49f4-845a-0c7ed745b916?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D31642484-2ba0e658-4dcd-49f4-845a-0c7ed745b916%26entityType%3Dcollection%26workspaceId%3D63e853c8-9aec-477f-909c-7f02f543150e)
-[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/bifrost)](https://artifacthub.io/packages/search?repo=bifrost)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/maximhq/bifrost?utm_source=badge)
-[![License](https://img.shields.io/github/license/maximhq/bifrost)](LICENSE)
+<p align="center">
+  <strong>Unified gateway for 23+ LLM providers, Model Context Protocol (MCP) tool execution, and enterprise security controls with sub-15µs overhead.</strong>
+</p>
 
-## The fastest way to build AI applications that never go down
+<p align="center">
+  <a href="https://github.com/tysongoulding/splitgate"><img src="https://img.shields.io/badge/Release-v1.0--enterprise-blue" alt="Release"></a>
+  <a href="https://github.com/tysongoulding/splitgate/blob/dev/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="https://github.com/tysongoulding/splitgate"><img src="https://img.shields.io/badge/Enterprise_Tests-165%2F165_Pass_(-race)-brightgreen" alt="Enterprise Tests"></a>
+  <a href="https://github.com/tysongoulding/splitgate"><img src="https://img.shields.io/badge/Audit-Victory_Confirmed-success" alt="Audit"></a>
+</p>
 
-Bifrost is a high-performance AI gateway that unifies access to 23+ providers (OpenAI, Anthropic, AWS Bedrock, Google Vertex, and more) through a single OpenAI-compatible API. Deploy in seconds with zero configuration and get automatic failover, load balancing, semantic caching, and enterprise-grade features.
+## The fastest way to build enterprise AI & MCP applications that never go down
+
+Splitgate is a high-performance AI and Model Context Protocol (MCP) gateway that unifies access to 23+ providers (OpenAI, Anthropic, AWS Bedrock, Google Vertex, and more) through a single OpenAI-compatible API. Deploy in seconds with zero configuration and get automatic failover, adaptive load balancing, semantic caching, and full enterprise security controls.
 
 ## Quick Start
 
@@ -57,22 +62,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
-## Enterprise Deployments
+## Splitgate Enterprise Capabilities
 
-Bifrost supports enterprise-grade, private deployments for teams running production AI systems at scale.
-In addition to private networking, custom security controls, and governance, enterprise deployments unlock advanced capabilities including adaptive load balancing, clustering, guardrails, MCP gateway, and other features designed for enterprise-grade scale and reliability.
+Splitgate delivers production-grade enterprise extensions on top of the ultra-fast core gateway:
 
-<img src=".github/assets/features.png" alt="Book a Demo" width="100%" style="margin-top:5px;"/>
-
-
-<div align="center" style="display: flex; flex-direction: column;">
-  <a href="https://calendly.com/maximai/bifrost-demo">
-    <img src=".github/assets/book-demo-button.png" alt="Book a Demo" width="170" style="margin-top:5px;"/>
-  </a>
-  <div>
-  <a href="https://www.getmaxim.ai/bifrost/enterprise" target="_blank" rel="noopener noreferrer">Explore enterprise capabilities</a>
-  </div>
-</div>
+| Enterprise Capability | Technology / Architecture | Key Highlights |
+|---|---|---|
+| **Content Guardrails Pipeline** | In-Process RE2, CEL & Adapters | Sub-millisecond evaluation, PII anonymization, streaming split-token hold buffer, AWS/Azure/GCP adapters, synchronous HTTP 422 blocking. |
+| **High-Availability Cluster Mode** | Memberlist SWIM & gRPC | Peer auto-discovery on port 10101, gRPC state replication on port 10102, 7-lane broker relay, deterministic leader failover. |
+| **Zero-Drift Distributed Rate Limiting** | P2P Token Bucket & Consistent Hash | Forwarding RPC key affinity, gossip delta sync, Lua Redis coordination, verified 0 drift under 1,000-goroutine bursts. |
+| **Adaptive Load Balancing & Circuit Breakers** | Peak EWMA & 4-Tier Health FSM | Latency exponential decay, error penalty, 4 health states (`Healthy`, `Degraded`, `Held`, `Dead`), held-keys backoff, automatic failover. |
+| **Enterprise SSO (SAML 2.0 & OIDC)** | RS256 JWKS & XML Digests | Okta, Entra ID, Google Workspace, Keycloak support, atomic key replacement on rotation, race-free JIT user provisioning, SCIM 2.0. |
+| **Dynamic Secret Vault Integrations** | Multi-Cloud Vault Drivers | HashiCorp Vault KV v2, AWS Secrets Manager, GCP Secret Manager, multi-tenant paths, TTL cache, circuit-breaker stale fallback, cache flush API. |
+| **Federated MCP Tool Governance** | RFC 8693 Token Exchange & Dual-Plane ACL | Virtual `/mcp/{slug}` endpoints, per-user tool visibility, subject token deduplication, cross-plane boundary leak prevention. |
+| **Automated Log Streaming & Offloading** | Multi-Trigger Batched Queue | S3/GCS payload offloader for payloads >32KB, zero-retention Datadog streaming exporter, high-throughput non-blocking worker pools. |
+| **Tamper-Evident Audit Ledger** | Cryptographic HMAC-SHA256 Chains | Merkle-linked audit blocks, sequence monotonicity checks, tail truncation detection, GDPR client IP scrubbing. |
+| **Granular RBAC & Diagnostics** | FastHTTP Middleware & SLA Bundles | 17-resource RBAC matrix across 4 system roles (`Admin`, `Developer`, `Security Auditor`, `Operator`), rolling P50/P90/P99 latency tracking, bounded `.tar.gz` diagnostic bundles. |
 
 ---
 

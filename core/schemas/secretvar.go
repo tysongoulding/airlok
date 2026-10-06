@@ -30,7 +30,7 @@ type SecretVar struct {
 
 // inferSecretType returns the SecretType implied by a reference string prefix.
 func inferSecretType(ref string) SecretType {
-	if strings.HasPrefix(ref, "vault.") {
+	if strings.HasPrefix(ref, "vault.") || strings.HasPrefix(ref, "vault://") {
 		return SecretTypeVault
 	}
 	if strings.HasPrefix(ref, "env.") {
@@ -97,7 +97,7 @@ func parseSecretRef(value string) *SecretVar {
 			}
 		}
 	}
-	if strings.HasPrefix(val, "vault.") {
+	if strings.HasPrefix(val, "vault.") || strings.HasPrefix(val, "vault://") {
 		return &SecretVar{ref: val, SecretType: SecretTypeVault}
 	}
 	if strings.HasPrefix(val, "env.") {
@@ -154,6 +154,9 @@ func (e *SecretVar) GetRef() string {
 	case SecretTypeEnv:
 		return strings.TrimPrefix(e.ref, "env.")
 	case SecretTypeVault:
+		if strings.HasPrefix(e.ref, "vault://") {
+			return strings.TrimPrefix(e.ref, "vault://")
+		}
 		return strings.TrimPrefix(e.ref, "vault.")
 	}
 	return e.ref
@@ -191,6 +194,9 @@ func (e *SecretVar) IsFromVault() bool {
 func (e *SecretVar) VaultPath() string {
 	if e == nil || e.SecretType != SecretTypeVault {
 		return ""
+	}
+	if strings.HasPrefix(e.ref, "vault://") {
+		return strings.TrimPrefix(e.ref, "vault://")
 	}
 	return strings.TrimPrefix(e.ref, "vault.")
 }
@@ -406,7 +412,7 @@ func (e *SecretVar) UnmarshalJSON(data []byte) error {
 		}
 	}
 	// Plain string forms
-	if strings.HasPrefix(val, "vault.") {
+	if strings.HasPrefix(val, "vault.") || strings.HasPrefix(val, "vault://") {
 		e.ref = val
 		e.SecretType = SecretTypeVault
 		e.Val = ""
@@ -452,7 +458,7 @@ func (e *SecretVar) Scan(value any) error {
 		return e.Scan(string(v))
 	case string:
 		// Check raw value first — quoted strings (e.g. `"vault.x"`) are literals, not refs.
-		if strings.HasPrefix(v, "vault.") {
+		if strings.HasPrefix(v, "vault.") || strings.HasPrefix(v, "vault://") {
 			e.Val = ""
 			e.ref = v
 			e.SecretType = SecretTypeVault

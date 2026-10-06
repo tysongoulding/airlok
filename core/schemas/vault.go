@@ -53,7 +53,7 @@ func VaultBasePath(tableName, primaryKey string) string {
 // analogous to os.LookupEnv. Returns ("", false) when ref doesn't have the "vault."
 // prefix or no resolver is registered (OSS deployments / before enterprise startup).
 func LookupVault(ref string) (string, bool) {
-	if !strings.HasPrefix(ref, "vault.") || VaultResolveHook == nil {
+	if (!strings.HasPrefix(ref, "vault.") && !strings.HasPrefix(ref, "vault://")) || VaultResolveHook == nil {
 		return "", false
 	}
 	val := ref

@@ -54,6 +54,7 @@ tests/e2e/api/newman-reports
 
 # AI Agent specific
 settings.local.json
+.agents/
 .codex/
 .cursor/
 .claude/*

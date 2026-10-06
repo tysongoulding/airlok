@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -41,13 +42,29 @@ type OAuth2IssuanceHandler struct {
 	// when user identity is available). May be nil — VK refresh is never blocked
 	// then, matching availableModes which keeps offering vk without a resolver.
 	identityResolver OAuth2IdentityResolver
+	tokenExchanger   governance.TokenExchanger
 }
 
 // NewOAuth2IssuanceHandler creates a new issuance handler. identityResolver may
 // be nil — the VK-refresh cutoff degrades to a no-op, consistent with the
 // consent handler offering vk when no resolver is present.
 func NewOAuth2IssuanceHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver) *OAuth2IssuanceHandler {
-	return &OAuth2IssuanceHandler{store: store, tempTokens: tempTokens, identityResolver: identityResolver}
+	return &OAuth2IssuanceHandler{
+		store:            store,
+		tempTokens:       tempTokens,
+		identityResolver: identityResolver,
+		tokenExchanger:   governance.NewFederatedTokenExchanger(),
+	}
+}
+
+// SetTokenExchanger sets or overrides the TokenExchanger instance on the handler.
+func (h *OAuth2IssuanceHandler) SetTokenExchanger(exchanger governance.TokenExchanger) {
+	h.tokenExchanger = exchanger
+}
+
+// TokenExchanger returns the active TokenExchanger instance.
+func (h *OAuth2IssuanceHandler) TokenExchanger() governance.TokenExchanger {
+	return h.tokenExchanger
 }
 
 // Bounds on the client-controlled free-text fields of the issuance endpoints.
@@ -381,9 +398,55 @@ func (h *OAuth2IssuanceHandler) handleToken(ctx *fasthttp.RequestCtx) {
 		h.handleTokenAuthCode(ctx)
 	case "refresh_token":
 		h.handleTokenRefresh(ctx)
+	case "urn:ietf:params:oauth:grant-type:token-exchange":
+		h.handleTokenExchangeRFC8693(ctx)
 	default:
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("grant_type %q not supported", grantType))
 	}
+}
+
+func (h *OAuth2IssuanceHandler) handleTokenExchangeRFC8693(ctx *fasthttp.RequestCtx) {
+	subjectToken := string(ctx.FormValue("subject_token"))
+	audience := string(ctx.FormValue("audience"))
+	if audience == "" {
+		audience = string(ctx.FormValue("resource"))
+	}
+
+	if subjectToken == "" {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "subject_token is required")
+		return
+	}
+	if audience == "" {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "audience or resource is required")
+		return
+	}
+
+	exchanger := h.tokenExchanger
+	if exchanger == nil {
+		exchanger = governance.NewFederatedTokenExchanger()
+	}
+	token, err := exchanger.ExchangeToken(ctx, subjectToken, audience)
+	if err != nil {
+		if errors.Is(err, governance.ErrExpiredSubjectToken) {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "subject token expired")
+			return
+		}
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", err.Error())
+		return
+	}
+
+	ctx.SetContentType("application/json")
+	data, err := sonic.Marshal(map[string]interface{}{
+		"access_token":      token,
+		"token_type":        "Bearer",
+		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+		"expires_in":        3600,
+	})
+	if err != nil {
+		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to marshal token response")
+		return
+	}
+	ctx.SetBody(data)
 }
 
 func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
