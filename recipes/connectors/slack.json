@@ -1,0 +1,51 @@
+{
+  "id": "slack",
+  "name": "Slack Enterprise Connector",
+  "description": "Governed connector for Slack workspace channels, threads, and messaging.",
+  "category": "Communication",
+  "publisher": "Airlok Governance",
+  "status": "allowed",
+  "governance": {
+    "action": "allow",
+    "scopes": [
+      "channels:read",
+      "channels:history",
+      "chat:write",
+      "users:read"
+    ],
+    "cross_plane_constraints": {
+      "restricted_destination_providers": ["openai"]
+    },
+    "audit_level": "standard"
+  },
+  "client_config": {
+    "client_id": "slack-mcp",
+    "name": "slack",
+    "connection_type": "stdio",
+    "stdio_config": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "envs": [
+        "SLACK_BOT_TOKEN",
+        "SLACK_TEAM_ID"
+      ]
+    }
+  },
+  "available_tools": [
+    {
+      "name": "slack_read_channel",
+      "description": "Read recent messages from a Slack channel",
+      "action": "allow"
+    },
+    {
+      "name": "slack_post_message",
+      "description": "Post a message to an approved Slack channel",
+      "action": "allow"
+    },
+    {
+      "name": "slack_list_channels",
+      "description": "List public channels in the Slack workspace",
+      "action": "allow"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "version": "1.0",
+  "description": "Airlok Dual-Plane ACL Governance Policy for LLMs and Connectors",
+  "llm": {
+    "defaults": {
+      "action": "deny"
+    },
+    "rules": [
+      {
+        "provider": "google",
+        "model_pattern": "gemini-*",
+        "action": "allow"
+      },
+      {
+        "provider": "anthropic",
+        "model_pattern": "claude-*",
+        "action": "allow",
+        "audit": true,
+        "audit_tag": "monitored-claude"
+      },
+      {
+        "provider": "xai",
+        "model_pattern": "grok-*",
+        "action": "allow"
+      },
+      {
+        "provider": "openai",
+        "model_pattern": "*",
+        "action": "deny",
+        "rejection_reason": "OpenAI ChatGPT models blocked by security governance policy"
+      }
+    ]
+  },
+  "connectors": {
+    "defaults": {
+      "action": "deny"
+    },
+    "rules": [
+      {
+        "name": "google_workspace",
+        "action": "allow",
+        "scopes": ["drive.readonly", "docs", "sheets", "gmail.send"]
+      },
+      {
+        "name": "slack",
+        "action": "allow",
+        "scopes": ["chat:write", "channels:read"]
+      },
+      {
+        "name": "office365",
+        "action": "deny",
+        "rejection_reason": "Office365 integrations disabled by policy"
+      },
+      {
+        "name": "catalog_3000",
+        "action": "require_approval",
+        "sandbox": true
+      }
+    ]
+  },
+  "cross_plane_constraints": [
+    {
+      "rule_id": "prevent_data_leak",
+      "when_source_connector": ["google_workspace", "slack"],
+      "disallow_destination_llm": ["openai/*"]
+    }
+  ]
+}

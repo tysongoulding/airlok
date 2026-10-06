@@ -1,0 +1,47 @@
+```mermaid
+flowchart TD
+    subgraph Tier0["Portability Core Traits (Rust Shared Core)"]
+        StoreTrait["StoreTrait<br/>(Sessions, Checkpoints, Policies)"]
+        CtrlTrait["ControlBusTrait<br/>(Schema Discovery, Tool Dispatch, Events)"]
+        VaultTrait["SecretVaultTrait<br/>(OAuth Tokens, API Keys)"]
+        GitTrait["GitSyncTrait<br/>(Commit, Push, Branch Sync)"]
+    end
+
+    subgraph Milestone1["Milestone 1: Local-First (Zero-Dependency Single Binary)"]
+        Binary["airlok daemon (Single Rust Binary)"]
+        SQLite["Embedded SQLite / sled"]
+        TokioMpsc["In-Process Tokio Channels"]
+        KeyringFile["Local Encrypted Keystore"]
+        LocalGit["Local Git Worktree / CLI"]
+
+        Binary --> SQLite
+        Binary --> TokioMpsc
+        Binary --> KeyringFile
+        Binary --> LocalGit
+    end
+
+    subgraph Milestone2["Milestone 2: Cloud-Native (Multi-Tenant Distributed Cluster)"]
+        K8s["Airlok Gateway Pods (Stateless Axum)"]
+        PG["PostgreSQL / Supabase"]
+        NATS["NATS JetStream / Redis PubSub"]
+        CloudKMS["HashiCorp Vault / AWS KMS / GCP Secret Manager"]
+        RemoteGit["GitHub / GitLab Enterprise Webhooks & APIs"]
+
+        K8s --> PG
+        K8s --> NATS
+        K8s --> CloudKMS
+        K8s --> RemoteGit
+    end
+
+    StoreTrait -.-> SQLite
+    StoreTrait -.-> PG
+
+    CtrlTrait -.-> TokioMpsc
+    CtrlTrait -.-> NATS
+
+    VaultTrait -.-> KeyringFile
+    VaultTrait -.-> CloudKMS
+
+    GitTrait -.-> LocalGit
+    GitTrait -.-> RemoteGit
+```

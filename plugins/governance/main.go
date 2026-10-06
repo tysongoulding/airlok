@@ -152,6 +152,17 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+	dualPlaneACL          *DualPlaneACL
+}
+
+// SetDualPlaneACL configures the active dual-plane ACL policy.
+func (p *GovernancePlugin) SetDualPlaneACL(acl *DualPlaneACL) {
+	p.dualPlaneACL = acl
+}
+
+// GetDualPlaneACL returns the active dual-plane ACL policy.
+func (p *GovernancePlugin) GetDualPlaneACL() *DualPlaneACL {
+	return p.dualPlaneACL
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -1129,6 +1140,25 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
+
+	// Airlok Dual-Plane ACL check
+	if p.dualPlaneACL != nil {
+		action, reason := p.dualPlaneACL.CheckLLM(provider, model)
+		if action == PolicyActionDeny {
+			return req, &schemas.LLMPluginShortCircuit{
+				Error: &schemas.BifrostError{
+					Type:       bifrost.Ptr("airlok_policy_violation"),
+					StatusCode: bifrost.Ptr(403),
+					Error: &schemas.ErrorField{
+						Message: reason,
+					},
+				},
+			}, nil
+		}
+		if action == PolicyActionAudit {
+			ctx.SetValue(schemas.BifrostContextKey("airlok_audit_monitored"), true)
+		}
+	}
 	// Create request context for evaluation
 	evaluationRequest := &EvaluationRequest{
 		RequestType:      req.RequestType,
@@ -1359,6 +1389,22 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// Skip for non tool execution requests
 	if !req.RequestType.IsExecuteTool() {
 		return req, nil, nil
+	}
+
+	// Airlok Dual-Plane ACL check for connectors/tools
+	if p.dualPlaneACL != nil {
+		action, reason := p.dualPlaneACL.CheckConnector(toolName, "")
+		if action == PolicyActionDeny {
+			return req, &schemas.MCPPluginShortCircuit{
+				Error: &schemas.BifrostError{
+					Type:       bifrost.Ptr("airlok_connector_blocked"),
+					StatusCode: bifrost.Ptr(403),
+					Error: &schemas.ErrorField{
+						Message: reason,
+					},
+				},
+			}, nil
+		}
 	}
 
 	// Codemode meta-tools are not governed as tool executions, but their

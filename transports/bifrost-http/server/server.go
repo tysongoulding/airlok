@@ -2776,6 +2776,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.Config.ConfigStore != nil && s.SidekiqRunner != nil {
 		handlers.NewSidekiqHandler(s.Config.ConfigStore, s.SidekiqRunner).RegisterRoutes(s.Router, middlewares...)
 	}
+	// Register Airlok harness adapter & GitOps endpoints
+	handlers.NewAirlokHarnessHandler(os.Getenv("AIRLOK_REPO_PATH")).RegisterRoutes(s.Router, middlewares...)
 	// Register dev pprof handler only in dev mode
 	if handlers.IsDevMode() {
 		logger.Info("dev mode enabled, registering pprof endpoints")

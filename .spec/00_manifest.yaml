@@ -1,0 +1,10 @@
+version: "1.0"
+project: "airlok"
+owner: "Tyson Goulding"
+description: "Airlok: High-Performance AI Execution Boundary, Dual-Gateway (LLM + Connector/MCP), and Dual-Plane ACL Architecture for Agent Harnesses (Cursor, Claude, Antigravity, Pi) built on Bifrost"
+base_platform: "github.com/maximhq/bifrost"
+pipeline_sequence:
+  - "01_intake"
+  - "02_planning"
+  - "03_grill"
+  - "04_teamwork-preview"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -108,6 +109,9 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, err
 		}
 		governancePlugin.StartResetWorkers(ctx)
+		if os.Getenv("AIRLOK_DISABLE_ACL") != "1" {
+			governancePlugin.SetDualPlaneACL(governance.DefaultAirlokPolicy())
+		}
 		return governancePlugin, nil
 
 	case routing.PluginName:

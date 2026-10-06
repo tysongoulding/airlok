@@ -1,0 +1,85 @@
+```mermaid
+flowchart TD
+    subgraph Harnesses["Developer Harness Clients"]
+        Cursor["Cursor"]
+        Claude["Claude Code / Desktop"]
+        Antigravity["Google Antigravity"]
+        Pi["Pi / OpenCode"]
+    end
+
+    subgraph StoragePlane["Storage & Version Control"]
+        Storage["Airlok Storage Engine<br/>(Sessions, Checkpoints, Policies)"]
+        GitRepo[("GIT Repository<br/>(GitOps & Audit Log)")]
+    end
+
+    subgraph GatewayBoundary["Airlok Execution Boundary"]
+        subgraph LLM_Plane["LLM Gateway"]
+            LLM_API["API Entrypoint<br/>(/v1/chat, /v1/messages)"]
+            LLM_Router["Model Router & Failover"]
+            LLM_Ctrl["Ctrl Node (Schema Inject & Tool Dispatch)"]
+        end
+
+        subgraph CtrlBus["Bidirectional Control Channel (Ctrl)"]
+            CtrlChannel["In-Memory Tokio Channel (Local)<br/>Redis / NATS (Cloud)"]
+        end
+
+        subgraph CON_Plane["Connector Gateway"]
+            CON_OAuth["OAuth 2.0 PKCE Handler"]
+            CON_Runtime["Connector Runtime<br/>(MCP Runner + SaaS Adapters)"]
+            CON_Ctrl["Ctrl Node (Tool Exec & Result Streaming)"]
+        end
+
+        subgraph DualACL["Access Control List (ACL) Engine"]
+            ACL_LLM["LLM Policy Gate<br/>(Allow / Deny / Audit)"]
+            ACL_CON["Connector Policy Gate<br/>(Allow / Deny / Require Approval)"]
+        end
+    end
+
+    subgraph LLM_Providers["Upstream LLM Providers"]
+        Gemini["Google Gemini<br/>(Allowed)"]:::allowed
+        Anthropic["Anthropic Claude<br/>(Managed)"]:::managed
+        Grok["xAI Grok<br/>(Allowed)"]:::allowed
+        ChatGPT["OpenAI ChatGPT<br/>(Blocked / Restricted)"]:::denied
+    end
+
+    subgraph Integrations["External Connectors & SaaS"]
+        GWorkspace["Google Workspace<br/>(Docs, Sheets, Drive, Gmail)"]:::allowed
+        Slack["Slack API"]:::allowed
+        O365["Office365<br/>(Blocked / Restricted)"]:::denied
+        Catalog["3000+ SaaS & MCP Tools"]:::managed
+    end
+
+    %% Client flows
+    Harnesses -->|"Session & Checkpoints"| Storage
+    Storage -->|"GitOps Sync"| GitRepo
+
+    Harnesses -->|"Model Requests (API)"| LLM_API
+    Harnesses -->|"Auth & Authorize (OAuth)"| CON_OAuth
+
+    %% Internal Gateway routing & Ctrl
+    LLM_API --> LLM_Router
+    LLM_Router <--> LLM_Ctrl
+    LLM_Ctrl <===>|"Bidirectional Tool & Schema Sync"| CtrlChannel
+    CtrlChannel <===> CON_Ctrl
+    CON_Ctrl <--> CON_Runtime
+
+    %% ACL Supervision
+    ACL_LLM -.->|"Enforce Rules"| LLM_Router
+    ACL_CON -.->|"Enforce Rules"| CON_Runtime
+
+    %% Outbound LLM Execution
+    LLM_Router -->|"Permitted"| Gemini
+    LLM_Router -->|"Permitted (Audit)"| Anthropic
+    LLM_Router -->|"Permitted"| Grok
+    LLM_Router -.->|"Denied / Guarded"| ChatGPT
+
+    %% Outbound Connector Execution
+    CON_Runtime -->|"Authorized"| GWorkspace
+    CON_Runtime -->|"Authorized"| Slack
+    CON_Runtime -.->|"Denied / Guarded"| O365
+    CON_Runtime -->|"Sandboxed"| Catalog
+
+    classDef allowed fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#155724;
+    classDef managed fill:#cce5ff,stroke:#007bff,stroke-width:2px,color:#004085;
+    classDef denied fill:#f8d7da,stroke:#dc3545,stroke-dasharray: 5 5,stroke-width:2px,color:#721c24;
+```

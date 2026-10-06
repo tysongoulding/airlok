@@ -1,0 +1,55 @@
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer / Harness (Cursor/Claude/Antigravity/Pi)
+    participant OAuth as Connector Gateway (OAuth)
+    participant LLM_GW as LLM Gateway
+    participant ACL as Dual-Plane ACL Engine
+    participant Ctrl as Bidirectional Ctrl Bus
+    participant CON_GW as Connector Gateway Runtime
+    participant ExtLLM as Upstream LLM (Gemini/Claude)
+    participant ExtSaaS as External SaaS (Google/Slack)
+    participant GitStore as Storage & Git Engine
+
+    Note over Dev,OAuth: 1. Authentication & OAuth Handshake
+    Dev->>OAuth: Initiate OAuth (PKCE / Token Exchange)
+    OAuth-->>Dev: Issue Session Token & Active Connector Scopes
+
+    Note over Dev,LLM_GW: 2. Harness Prompt & Schema Injection
+    Dev->>LLM_GW: POST /v1/chat/completions (Prompt + Session Token)
+    LLM_GW->>ACL: Check LLM Policy (Caller, Requested Model)
+    alt Model Denied (e.g. ChatGPT blocked)
+        ACL-->>LLM_GW: Policy Violation (HTTP 403 Forbidden)
+        LLM_GW-->>Dev: 403 Forbidden: Model blocked by organization ACL
+    else Model Permitted
+        ACL-->>LLM_GW: Permitted
+        LLM_GW->>Ctrl: Query Active Tools for Session
+        Ctrl->>CON_GW: Fetch permitted MCP/OpenAPI schemas
+        CON_GW->>ACL: Validate Connector Policies (Workspace, Slack enabled)
+        ACL-->>CON_GW: Connector rules verified
+        CON_GW-->>Ctrl: Return Tool Definitions JSON
+        Ctrl-->>LLM_GW: Inject Tool Definitions into Model Context
+    end
+
+    Note over LLM_GW,ExtLLM: 3. Upstream Model Invocation
+    LLM_GW->>ExtLLM: Forward Request with Tool Definitions
+    ExtLLM-->>LLM_GW: Return Tool Call Request (e.g., slack_post_message)
+
+    Note over LLM_GW,CON_GW: 4. Bidirectional Tool Dispatch (Ctrl)
+    LLM_GW->>Ctrl: Dispatch Tool Call (name, arguments)
+    Ctrl->>CON_GW: Execute Tool (slack_post_message)
+    CON_GW->>ACL: Check Connector Rule (e.g., Slack allowed, Office365 denied)
+    CON_GW->>ExtSaaS: Invoke Slack API with User OAuth Token
+    ExtSaaS-->>CON_GW: Tool Output (Message Sent)
+    CON_GW-->>Ctrl: Tool Execution Result
+    Ctrl-->>LLM_GW: Feed Tool Result back to LLM
+
+    Note over LLM_GW,Dev: 5. Completion & GitOps Persistence
+    LLM_GW->>ExtLLM: Send Tool Output for Final Synthesis
+    ExtLLM-->>LLM_GW: Final Response Text
+    LLM_GW-->>Dev: Stream Final Response
+    par GitOps Audit
+        Dev->>GitStore: Commit Session Snapshot & Checkpoint
+        GitStore->>GitStore: Git Commit & Push (Local/Remote Git)
+    end
+```

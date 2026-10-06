@@ -1,0 +1,37 @@
+{
+  "id": "office365",
+  "name": "Microsoft Office 365 Connector (Blocked)",
+  "description": "Microsoft 365 Graph integration — blocked by organization governance policy.",
+  "category": "Enterprise Services",
+  "publisher": "Airlok Governance",
+  "status": "blocked",
+  "governance": {
+    "action": "deny",
+    "rejection_reason": "Office365 integrations disabled by policy to prevent enterprise compliance risk.",
+    "scopes": [],
+    "audit_level": "security_alert"
+  },
+  "client_config": {
+    "client_id": "office365-mcp",
+    "name": "office365",
+    "connection_type": "http",
+    "connection_url": "https://graph.microsoft.com/v1.0/mcp"
+  },
+  "available_tools": [
+    {
+      "name": "outlook_read_mail",
+      "description": "Read Outlook mailbox",
+      "action": "deny"
+    },
+    {
+      "name": "onedrive_read_file",
+      "description": "Access files in Microsoft OneDrive",
+      "action": "deny"
+    },
+    {
+      "name": "teams_post_message",
+      "description": "Post messages to Microsoft Teams",
+      "action": "deny"
+    }
+  ]
+}

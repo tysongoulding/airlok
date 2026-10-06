@@ -1,0 +1,57 @@
+{
+  "id": "google_workspace",
+  "name": "Google Workspace Connector",
+  "description": "Enterprise connector for Google Drive, Docs, Sheets, and Gmail via MCP.",
+  "category": "Productivity",
+  "publisher": "Airlok Governance",
+  "status": "allowed",
+  "governance": {
+    "action": "allow",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/gmail.send"
+    ],
+    "cross_plane_constraints": {
+      "restricted_destination_providers": ["openai"]
+    },
+    "audit_level": "standard"
+  },
+  "client_config": {
+    "client_id": "google-workspace-mcp",
+    "name": "google_workspace",
+    "connection_type": "stdio",
+    "stdio_config": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-google-workspace"],
+      "envs": [
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_WORKSPACE_CLIENT_ID",
+        "GOOGLE_WORKSPACE_CLIENT_SECRET"
+      ]
+    }
+  },
+  "available_tools": [
+    {
+      "name": "google_drive_search",
+      "description": "Search files in Google Drive",
+      "action": "allow"
+    },
+    {
+      "name": "google_docs_read",
+      "description": "Read content from Google Docs document",
+      "action": "allow"
+    },
+    {
+      "name": "google_sheets_read",
+      "description": "Read ranges from Google Sheets spreadsheet",
+      "action": "allow"
+    },
+    {
+      "name": "google_gmail_send",
+      "description": "Draft or send an email via Gmail",
+      "action": "allow"
+    }
+  ]
+}
