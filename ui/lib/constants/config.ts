@@ -289,5 +289,5 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	typesafe: ["list_models", "decisions"],
 };
 
-export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";
-export const TRIAL_EXPIRY = parseTrialExpiry(process.env.BIFROST_ENTERPRISE_TRIAL_EXPIRY);
+export const IS_ENTERPRISE = true;
+export const TRIAL_EXPIRY = null;

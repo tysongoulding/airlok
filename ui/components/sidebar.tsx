@@ -1484,10 +1484,6 @@ export default function AppSidebar() {
 				dismissible: true,
 			});
 		}
-		// Only show after mounted to ensure cookie is properly hydrated and avoid flash
-		if (!IS_ENTERPRISE && mounted && !isProductionSetupDismissed) {
-			cards.push(productionSetupHelpCard);
-		}
 		return cards;
 	}, [
 		coreConfig?.restart_required,
