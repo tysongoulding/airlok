@@ -1413,7 +1413,7 @@ export default function AppSidebar() {
 	// Always render the light theme version for SSR to avoid hydration mismatch.
 	// On a custom branding deployment useBranding returns the customer's assets
 	// instead, which are theme-agnostic.
-	const { logoSrc, iconSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
+	const { logoSrc, iconSrc, logoAlt, isCustom } = useBranding(mounted && resolvedTheme === "dark");
 
 	const { isConnected: isWebSocketConnected } = useWebSocket();
 
@@ -1538,11 +1538,15 @@ export default function AppSidebar() {
 			<SidebarHeader className="mt-1 ml-2 flex justify-between px-0 group-data-[collapsible=icon]:ml-0 group-data-[collapsible=icon]:h-auto">
 				{/* Expanded state: horizontal layout */}
 				<div className="flex h-8 w-full items-center justify-between px-1.5 group-data-[collapsible=icon]:hidden">
-					<Link to="/workspace/logs" className="group flex items-center gap-2 pl-2">
-						{/* max-w caps an unusually wide uploaded logo so it cannot push the
-						    collapse button out of the header; object-contain preserves its
-						    aspect ratio within that box. */}
-						<img className="h-[22px] w-auto max-w-[150px] object-contain" src={logoSrc} alt={logoAlt} width={70} height={70} />
+					<Link to="/workspace/logs" className="group flex items-center gap-2.5 pl-2 select-none">
+						{isCustom ? (
+							<img className="h-[22px] w-auto max-w-[150px] object-contain" src={logoSrc} alt={logoAlt} width={70} height={70} />
+						) : (
+							<div className="flex items-center gap-2">
+								<img className="h-6 w-auto object-contain transition-transform group-hover:scale-105" src="/splitgate-icon.webp" alt="SplitGate" />
+								<span className="font-bold text-lg tracking-tight text-foreground transition-colors group-hover:text-primary">SplitGate</span>
+							</div>
+						)}
 					</Link>
 					<button
 						onClick={toggleSidebar}
@@ -1561,7 +1565,11 @@ export default function AppSidebar() {
 					aria-label="Expand sidebar"
 					onClick={toggleSidebar}
 				>
-					<img className="size-[22px] object-contain" src={iconSrc} alt="" width={22} height={22} />
+					{isCustom ? (
+						<img className="size-[22px] object-contain" src={iconSrc} alt="" width={22} height={22} />
+					) : (
+						<img className="size-6 object-contain" src="/splitgate-icon.webp" alt="SplitGate" width={24} height={24} />
+					)}
 				</button>
 			</SidebarHeader>
 			{envLabel && (

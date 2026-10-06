@@ -139,7 +139,7 @@ export default function Topbar() {
 	// Shares the sidebar's RTK Query cache entry, so this costs no extra request.
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
-	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
+	const { logoSrc, logoAlt, isCustom } = useBranding(resolvedTheme === "dark");
 
 	// Enterprise SCIM/OAuth stashes the profile in localStorage. Read it after
 	// mount so SSR/first paint doesn't diverge from the hydrated tree.
@@ -175,7 +175,14 @@ export default function Topbar() {
 		<header className="flex h-13 w-full shrink-0 items-center gap-2 px-3 pt-1 md:pr-3 md:pl-0" data-testid="topbar-container-root">
 			<div className="flex min-w-0 flex-1 items-center gap-2">
 				<SidebarTrigger className="shrink-0 md:hidden" />
-				<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />
+				{isCustom ? (
+					<img className="h-[22px] w-auto max-w-[120px] object-contain md:hidden" src={logoSrc} alt={logoAlt} width={70} height={70} />
+				) : (
+					<div className="flex items-center gap-1.5 md:hidden">
+						<img className="h-5 w-auto object-contain" src="/splitgate-icon.webp" alt="SplitGate" />
+						<span className="font-bold text-base tracking-tight text-foreground">SplitGate</span>
+					</div>
+				)}
 				{/* text-base font-semibold, which is the size this heading has actually
 				    rendered at: Tailwind has no --text-md token, so the text-md it used
 				    to carry emitted no font-size rule and it simply inherited 0.95rem. */}

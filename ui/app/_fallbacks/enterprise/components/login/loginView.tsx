@@ -59,7 +59,7 @@ export default function LoginView() {
 		}
 	};
 
-	const { logoSrc, logoAlt } = useBranding(mounted && resolvedTheme === "dark");
+	const { logoSrc, logoAlt, isCustom } = useBranding(mounted && resolvedTheme === "dark");
 
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">
@@ -67,7 +67,14 @@ export default function LoginView() {
 				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
 					{/* Logo */}
 					<div className="flex items-center justify-center">
-						<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
+						{isCustom ? (
+							<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
+						) : (
+							<div className="flex items-center gap-2">
+								<img src="/splitgate-icon.webp" alt="SplitGate" className="h-8 w-auto object-contain" />
+								<span className="font-bold text-2xl tracking-tight text-foreground">SplitGate</span>
+							</div>
+						)}
 					</div>
 
 					<div className="space-y-2 text-center">

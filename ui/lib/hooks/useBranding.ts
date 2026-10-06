@@ -7,8 +7,8 @@ import { useEffect } from "react";
  * slot an enterprise deployment has not overridden. */
 const DEFAULT_LOGO_LIGHT = "/bifrost-logo.webp";
 const DEFAULT_LOGO_DARK = "/bifrost-logo-dark.webp";
-const DEFAULT_ICON_LIGHT = "/bifrost-icon.webp";
-const DEFAULT_ICON_DARK = "/bifrost-icon-dark.webp";
+const DEFAULT_ICON_LIGHT = "/splitgate-icon.webp";
+const DEFAULT_ICON_DARK = "/splitgate-icon.webp";
 
 /**
  * Resolves a branding asset URL returned by the API against the current API
@@ -139,7 +139,7 @@ function toBrandingAssets(branding: BrandingState | undefined, isDark: boolean):
 		logoSrc: hasLogo ? resolveBrandingAssetUrl(branding!.logo_url) : isDark ? DEFAULT_LOGO_DARK : DEFAULT_LOGO_LIGHT,
 		iconSrc: hasIcon ? resolveBrandingAssetUrl(branding!.icon_url) : isDark ? DEFAULT_ICON_DARK : DEFAULT_ICON_LIGHT,
 		isCustom: Boolean(branding?.enabled),
-		logoAlt: branding?.enabled ? "" : "Bifrost",
+		logoAlt: branding?.enabled ? "" : "SplitGate",
 	};
 }
 

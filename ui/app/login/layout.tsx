@@ -28,13 +28,20 @@ function RouteComponent() {
 // flashing the Bifrost one on the way to the login form.
 function PendingCard() {
 	const { resolvedTheme } = useTheme();
-	const { logoSrc, logoAlt } = useBranding(resolvedTheme === "dark");
+	const { logoSrc, logoAlt, isCustom } = useBranding(resolvedTheme === "dark");
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">
 			<div className="w-full max-w-md">
 				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8">
 					<div className="flex items-center justify-center">
-						<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
+						{isCustom ? (
+							<img src={logoSrc} alt={logoAlt} width={160} height={26} className="max-h-[40px] w-auto max-w-[220px] object-contain" />
+						) : (
+							<div className="flex items-center gap-2">
+								<img src="/splitgate-icon.webp" alt="SplitGate" className="h-8 w-auto object-contain" />
+								<span className="font-bold text-2xl tracking-tight text-foreground">SplitGate</span>
+							</div>
+						)}
 					</div>
 					<div className="flex items-center justify-center py-6">
 						<div className="text-muted-foreground text-sm">Checking authentication...</div>
